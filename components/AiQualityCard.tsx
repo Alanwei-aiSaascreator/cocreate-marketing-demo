@@ -24,27 +24,36 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
   const designPct = total > 0 ? Math.round((ruleByDesign / total) * 100) : 0;
   const degradedPct = Math.round(degradedRate * 100);
 
-  // 健康判定：只有「已配置 key 却失败」才是故障
+  // 健康判定：只有「已配置 key 却失败」才是故障。
+  // 分三态 —— 部分降级（模型只给了部分平台，其余由规则补齐）不该被当成健康，
+  // 也不该和「整批退回模板」混为一谈。
   const health = !llmConfigured
     ? {
         tone: "info" as const,
         headline: "未配置模型",
         detail: "没配 LLM_API_KEY，全部按设计走规则引擎 —— 这是正常状态，不是故障。",
       }
-    : degraded > 0
+    : degraded === 0
       ? {
-          tone: "bad" as const,
-          headline: `不健康 · 降级 ${degraded} 条`,
-          detail: `有 ${degraded} 条内容本该走大模型但失败了，已退回模板。检查 key 额度、网络，或模型返回格式。`,
-        }
-      : {
           tone: "good" as const,
           headline: "健康 · 零降级",
           detail:
             llm > 0
               ? `模型调用全部正常：本期 ${llm}/${total} 条内容由 ${model} 生成，无一条因失败退回模板。`
               : `模型已配置（${model}）且零降级；本期内容均按设计用规则引擎产出（种子数据预生成），等有新素材提交就会走模型。`,
-        };
+        }
+      : degraded >= total
+        ? {
+            tone: "bad" as const,
+            headline: `不健康 · 全部降级（${degraded} 条）`,
+            detail: "本期内容全部退回模板，说明模型调用整体不可用。检查 key 额度、网络，或模型返回格式。",
+          }
+        : {
+            tone: "warn" as const,
+            headline: `部分降级 · ${degraded}/${total} 条退回模板`,
+            detail:
+              "模型只给出了部分平台，其余由规则引擎补齐 —— 那几条内容是模板拼的，不是 AI 写的。长期出现说明模型输出不稳定。",
+          };
 
   const TONE = {
     good: {
@@ -53,6 +62,13 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
       body: "text-emerald-800",
       icon: "text-emerald-600",
       Icon: CheckCircle2,
+    },
+    warn: {
+      box: "border-amber-200 bg-amber-50",
+      head: "text-amber-900",
+      body: "text-amber-800",
+      icon: "text-amber-600",
+      Icon: AlertTriangle,
     },
     bad: {
       box: "border-red-200 bg-red-50",

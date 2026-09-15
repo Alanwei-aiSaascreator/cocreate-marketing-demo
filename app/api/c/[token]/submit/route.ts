@@ -302,6 +302,9 @@ export async function POST(
       coverHint: c.coverHint,
       complianceNote: c.complianceNote,
       shareToken: c.shareToken,
+      // 逐条如实返回来源，前端才能显示「这条是模板拼的」而不是笼统标一个整批状态
+      source: c.aiMode,
+      fallback: c.degraded,
     })),
     campaignPoints: settled.campaignPoints,
     totalPoints: settled.totalPoints,

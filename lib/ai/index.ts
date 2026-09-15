@@ -119,10 +119,17 @@ export async function generateBlueprint(
   const rewardTiers = ensureRewardTiers(rawTiers.kept, merchant);
 
   const usedRuleForFrames = frames.length > rawFrames.kept.length;
+  // 任务卡不足 3 个有效字段时会被整张替换成规则版本；奖励阶梯不足 3 档同理。
+  // 这两种都是「模型没给全，规则顶上」，属于部分降级，不能算成一次干净的成功。
+  const taskCardReplaced = rawTaskCard.kept.length < 3;
+  const tiersReplaced = rawTiers.kept.length < 3;
+
   const notes = [`${cfg.model} 生成，耗时 ${res.ms}ms`];
   if (usedRuleForFrames) {
-    notes.push(`模型只给出 ${rawFrames.kept.length}/${campaign.platforms.length} 个平台，其余用规则引擎补齐`);
+    notes.push(`模型只给出 ${rawFrames.kept.length}/${campaign.platforms.length} 个平台，其余由规则引擎补齐`);
   }
+  if (taskCardReplaced) notes.push("任务卡有效字段不足，整张改用规则引擎版本");
+  if (tiersReplaced) notes.push("奖励阶梯有效档位不足，改用规则引擎版本");
   if (dropped > 0) notes.push(`丢弃 ${dropped} 项不合法产出`);
 
   return {
@@ -130,7 +137,8 @@ export async function generateBlueprint(
     taskCard,
     rewardTiers,
     aiMode: "llm",
-    degraded: false,
+    // 任何一处靠规则顶上，都算部分降级 —— 部分降级也是降级
+    degraded: usedRuleForFrames || taskCardReplaced || tiersReplaced || dropped > 0,
     note: notes.join("；"),
   };
 }
@@ -225,10 +233,25 @@ function ensureRewardTiers(tiers: RawRewardTier[], merchant: MerchantLike): Rewa
 
 // ── 2. 素材加工 ──────────────────────────────────────────
 
+/**
+ * 单条内容的产出，**带上它自己的来源**。
+ *
+ * 为什么必须逐条标：模型可能只给出 4 个平台里的 3 个，第 4 个由规则引擎补齐。
+ * 早先这种情况整批标成 `aiMode: "llm"` —— 那条模板内容在数据库里就被标成了
+ * 大模型产出，标签在撒谎，面板也因此看不见"部分降级"。
+ */
+export interface ComposedItem extends ComposedContent {
+  /** 这一条的真实来源：llm = 模型写的，rule = 规则引擎拼的 */
+  source: AiMode;
+  /** 这一条是否为兜底产出（模型本该给却没给）。未配 key / 种子数据时为 false */
+  fallback: boolean;
+}
+
 export interface ComposeResult {
-  contents: ComposedContent[];
+  contents: ComposedItem[];
+  /** 整批的主来源 */
   aiMode: AiMode;
-  /** 同 BlueprintResult.degraded：只有「本该走模型却失败」才为 true */
+  /** 是否存在任何兜底产出（含「部分平台补齐」这种情况） */
   degraded: boolean;
   note: string;
 }
@@ -244,8 +267,13 @@ export async function composeContents(
     ? campaign.platforms
     : frames.map((f) => f.platform);
 
+  /** 整批走规则引擎。degraded 决定这些行是不是「兜底」 */
   const byRule = (degraded: boolean, note?: string): ComposeResult => ({
-    contents: targets.map((p) => ruleCompose(merchant, campaign, submission, p)),
+    contents: targets.map((p) => ({
+      ...ruleCompose(merchant, campaign, submission, p),
+      source: "rule" as AiMode,
+      fallback: degraded,
+    })),
     aiMode: "rule",
     degraded,
     note:
@@ -309,14 +337,33 @@ export async function composeContents(
     return byRule(true, `模型产出全部不合法（丢弃 ${raw.dropped} 条），已降级到规则引擎。`);
   }
 
-  const contents = targets.map((p) => modelContents.get(p) ?? ruleCompose(merchant, campaign, submission, p));
-  const filled = targets.length - modelContents.size;
+  // 逐条标来源：模型给了就是 llm，模型没给的那个平台由规则引擎补，并标记为兜底
+  const contents: ComposedItem[] = targets.map((p) => {
+    const fromModel = modelContents.get(p);
+    if (fromModel) {
+      return { ...fromModel, source: "llm" as AiMode, fallback: false };
+    }
+    return {
+      ...ruleCompose(merchant, campaign, submission, p),
+      source: "rule" as AiMode,
+      fallback: true,
+    };
+  });
 
+  const filled = contents.filter((c) => c.fallback).length;
   const notes = [`${cfg.model} 加工，耗时 ${res.ms}ms`];
-  if (filled > 0) notes.push(`${filled} 个平台由规则引擎补齐`);
+  if (filled > 0) {
+    notes.push(`模型只给出 ${targets.length - filled}/${targets.length} 个平台，其余由规则引擎补齐（部分降级）`);
+  }
   if (raw.dropped > 0) notes.push(`丢弃 ${raw.dropped} 条不合法产出`);
 
-  return { contents, aiMode: "llm", degraded: false, note: notes.join("；") };
+  return {
+    contents,
+    aiMode: "llm",
+    // 只要有任何一条是兜底产出就算降级 —— 部分降级也是降级，不能藏
+    degraded: filled > 0,
+    note: notes.join("；"),
+  };
 }
 
 /** 服务端合规自检：不信任模型的自我声明 */

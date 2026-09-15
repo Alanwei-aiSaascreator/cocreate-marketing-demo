@@ -185,6 +185,24 @@ async function main() {
       "各平台篇幅不同（符合平台字数区间）",
       `[${bodyLengths.join(", ")}]`,
     );
+
+    // 逐条来源自洽性。曾经出现过：模型只给了 3 个平台，第 4 个由规则引擎补，
+    // 但整批被标成 aiMode=llm —— 那条模板内容在库里被标成了「AI 写的」，标签在撒谎。
+    const items = submission.contents ?? [];
+    check(
+      items.every(
+        (c) =>
+          (c.source === "llm" && c.fallback === false) ||
+          (c.source === "rule" && c.fallback === true),
+      ),
+      "每条内容都带自己的真实来源（source 与 fallback 自洽）",
+      items.map((c) => `${c.platform}:${c.source}${c.fallback ? "(兜底)" : ""}`).join(" "),
+    );
+    check(
+      items.some((c) => c.fallback === true) === submission.degraded,
+      "批次降级标记与逐条兜底标记一致",
+      `degraded=${submission.degraded}`,
+    );
     check(
       (submission.rewards ?? []).length > 0,
       `首次参与即解锁福利`,
@@ -340,8 +358,10 @@ async function main() {
       "面板主动声明内容构成不是健康指标（防止把比例误读成健康度）",
     );
     check(
-      html.includes("健康 · 零降级") || html.includes("不健康 · 降级"),
-      "面板给出明确的健康判定结论",
+      html.includes("健康 · 零降级") ||
+        html.includes("部分降级") ||
+        html.includes("全部降级"),
+      "面板给出明确的健康判定结论（健康 / 部分降级 / 全部降级）",
     );
 
     if (hasKey) {
