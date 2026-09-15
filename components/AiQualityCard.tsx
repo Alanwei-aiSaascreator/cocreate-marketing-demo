@@ -25,8 +25,10 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
   const degradedPct = Math.round(degradedRate * 100);
 
   // 健康判定：只有「已配置 key 却失败」才是故障。
-  // 分三态 —— 部分降级（模型只给了部分平台，其余由规则补齐）不该被当成健康，
-  // 也不该和「整批退回模板」混为一谈。
+  // 分四态 —— 除了 好 / 部分降级 / 全降级，还有「未配置模型」这一态：
+  // 没配 key 时说「健康 · 零降级」是误导（压根没调用过模型），必须单独说清楚。
+  // 注意：这里原先把「未配置模型」漏算成三态之一，导致新克隆（无 key）跑冒烟测试时
+  // 健康判定断言失败 —— 是断言漏了这一态，不是面板少了一态。
   const health = !llmConfigured
     ? {
         tone: "info" as const,
