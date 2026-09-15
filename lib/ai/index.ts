@@ -13,10 +13,11 @@ import { llmConfig, llmJson } from "./deepseek";
 import { BLUEPRINT_SYSTEM, COMPOSE_SYSTEM, blueprintUserPrompt, composeUserPrompt, platformSpecText } from "./prompts";
 import { ruleBlueprint, ruleCompose, complianceCheck, type CampaignLike, type MerchantLike, type SubmissionLike } from "./rules";
 import { canonicalThresholds } from "../domain/scoring";
-import { blueprintSchema, composeBundleSchema } from "./schemas";
+import { blueprintSchema, composeBundleSchema, composedContentSchema, platformFrameSchema, rewardTierSchema, taskFieldSchema } from "./schemas";
 import type {
   BlueprintPayload,
   ComposeBundlePayload,
+  RawComposedContent,
   RawPlatformFrame,
   RawRewardTier,
   RawTaskField,
@@ -24,6 +25,31 @@ import type {
 
 export type { MerchantLike, CampaignLike, SubmissionLike } from "./rules";
 export { llmConfig } from "./deepseek";
+
+/**
+ * 逐条校验：坏一条只丢一条，不让一个字段吃掉整批产出。
+ * 返回保留下来的元素，以及被丢弃的数量（用于如实汇报）。
+ */
+function parseEach<T>(schema: { safeParse: (v: unknown) => { success: boolean; data?: T } }, items: unknown[]) {
+  const kept: T[] = [];
+  let dropped = 0;
+  for (const item of items) {
+    const parsed = schema.safeParse(item);
+    if (parsed.success && parsed.data !== undefined) kept.push(parsed.data);
+    else dropped++;
+  }
+  return { kept, dropped };
+}
+
+/** 空标题兜底：优先用正文首行，再不行用平台名 */
+function fallbackTitle(body: string, platform: Platform): string {
+  const line = body
+    .split("\n")
+    .map((s) => s.trim())
+    .find(Boolean);
+  if (!line) return PLATFORM_META[platform].name;
+  return line.length > 30 ? `${line.slice(0, 29)}…` : line;
+}
 
 // ── 1. 活动蓝图 ──────────────────────────────────────────
 
@@ -61,17 +87,36 @@ export async function generateBlueprint(
     return { ...r, note: `模型调用失败，已自动降级到规则引擎。原因：${res.error}` };
   }
 
-  // 模型可能漏平台 / 漏图片字段，这里补齐，保证下游流程不依赖模型的完美发挥
-  const frames = ensureFrames(res.data.frames, merchant, campaign);
-  const taskCard = ensureTaskCard(res.data.taskCard, merchant);
-  const rewardTiers = ensureRewardTiers(res.data.rewardTiers, merchant);
+  // 逐条校验：坏一条丢一条，再由 ensure* 用规则引擎补齐，而不是整批判失败
+  const rawFrames = parseEach<RawPlatformFrame>(platformFrameSchema, res.data.frames);
+  const rawTaskCard = parseEach<RawTaskField>(taskFieldSchema, res.data.taskCard);
+  const rawTiers = parseEach<RawRewardTier>(rewardTierSchema, res.data.rewardTiers);
+
+  const dropped = rawFrames.dropped + rawTaskCard.dropped + rawTiers.dropped;
+
+  // 模型一条都没给出可用的，就如实标成规则引擎，不假装是 AI 产出的
+  if (rawFrames.kept.length === 0 && rawTaskCard.kept.length === 0 && rawTiers.kept.length === 0) {
+    const r = fallback();
+    return { ...r, note: `模型产出全部不合法（丢弃 ${dropped} 项），已改用规则引擎。` };
+  }
+
+  const frames = ensureFrames(rawFrames.kept, merchant, campaign);
+  const taskCard = ensureTaskCard(rawTaskCard.kept, merchant);
+  const rewardTiers = ensureRewardTiers(rawTiers.kept, merchant);
+
+  const usedRuleForFrames = frames.length > rawFrames.kept.length;
+  const notes = [`${cfg.model} 生成，耗时 ${res.ms}ms`];
+  if (usedRuleForFrames) {
+    notes.push(`模型只给出 ${rawFrames.kept.length}/${campaign.platforms.length} 个平台，其余用规则引擎补齐`);
+  }
+  if (dropped > 0) notes.push(`丢弃 ${dropped} 项不合法产出`);
 
   return {
     frames,
     taskCard,
     rewardTiers,
     aiMode: "llm",
-    note: `${cfg.model} 生成，耗时 ${res.ms}ms${frames.length > res.data.frames.length ? "；模型漏了部分平台，已用规则引擎补齐" : ""}`,
+    note: notes.join("；"),
   };
 }
 
@@ -107,8 +152,17 @@ function ensureFrames(
   });
 }
 
-/** 任务卡必须包含一张实拍图 —— 这是整套玩法的可信度地基，模型漏了就补上 */
+/**
+ * 任务卡归一化。两条硬保证，不依赖模型的自觉：
+ * 1. 必须包含一张实拍图 —— 这是整套玩法的可信度地基。
+ * 2. 至少 3 个字段 —— 否则老客没什么可填的，AI 也没素材可加工。
+ *    模型只吐出 1-2 个字段时，整张卡改用规则引擎版本，而不是硬凑一张残缺的卡。
+ */
 function ensureTaskCard(taskCard: RawTaskField[], merchant: MerchantLike): TaskField[] {
+  const ruleCard = ruleBlueprint(merchant, { title: "", objective: "", platforms: [] }).taskCard;
+
+  if (taskCard.length < 3) return ruleCard;
+
   const normalized: TaskField[] = taskCard.slice(0, 6).map((f) => ({
     id: f.id,
     label: f.label,
@@ -128,7 +182,6 @@ function ensureTaskCard(taskCard: RawTaskField[], merchant: MerchantLike): TaskF
 
   if (normalized.some((f) => f.type === "image")) return normalized;
 
-  const ruleCard = ruleBlueprint(merchant, { title: "", objective: "", platforms: [] }).taskCard;
   const imageField = ruleCard.find((f) => f.type === "image")!;
   return [...normalized, imageField];
 }
@@ -210,12 +263,16 @@ export async function composeContents(
     return { ...byRule(), note: `模型调用失败，已自动降级到规则引擎。原因：${res.error}` };
   }
 
-  // 同样补齐：模型漏了哪个平台，就用规则引擎补哪个平台
+  // 逐条校验：某一条内容的字段有问题，只放弃那一个平台并由规则引擎补齐，
+  // 而不是让一次小瑕疵吃掉全部 AI 产出（实测踩过：一个空 title 干掉 4 个平台）
+  const raw = parseEach<RawComposedContent>(composedContentSchema, res.data.contents);
+
   const modelContents = new Map<Platform, ComposedContent>();
-  for (const c of res.data.contents) {
+  for (const c of raw.kept) {
     modelContents.set(c.platform, {
       platform: c.platform,
-      title: c.title,
+      // 朋友圈这类平台没有标题，模型留空是合理的，这里补兜底值而不是判它失败
+      title: (c.title ?? "").trim() || fallbackTitle(c.body, c.platform),
       body: c.body,
       tags: (c.tags ?? []).map(normalizeTag).filter(Boolean),
       coverHint: c.coverHint ?? "",
@@ -227,14 +284,22 @@ export async function composeContents(
     });
   }
 
+  // 模型一条可用的都没给出，就如实标成规则引擎
+  if (modelContents.size === 0) {
+    return {
+      ...byRule(),
+      note: `模型产出全部不合法（丢弃 ${raw.dropped} 条），已改用规则引擎。`,
+    };
+  }
+
   const contents = targets.map((p) => modelContents.get(p) ?? ruleCompose(merchant, campaign, submission, p));
   const filled = targets.length - modelContents.size;
 
-  return {
-    contents,
-    aiMode: "llm",
-    note: `${cfg.model} 加工，耗时 ${res.ms}ms${filled > 0 ? `；模型漏了 ${filled} 个平台，已用规则引擎补齐` : ""}`,
-  };
+  const notes = [`${cfg.model} 加工，耗时 ${res.ms}ms`];
+  if (filled > 0) notes.push(`${filled} 个平台由规则引擎补齐`);
+  if (raw.dropped > 0) notes.push(`丢弃 ${raw.dropped} 条不合法产出`);
+
+  return { contents, aiMode: "llm", note: notes.join("；") };
 }
 
 /** 服务端合规自检：不信任模型的自我声明 */

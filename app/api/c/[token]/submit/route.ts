@@ -41,10 +41,18 @@ export async function POST(
     include: { merchant: true },
   });
   if (!campaign) {
-    return NextResponse.json({ error: "活动不存在或已结束" }, { status: 404 });
+    // 和「活动已结束」严格区分：这是链接本身失效（数据被重置 / 活动被删），
+    // 提示老客「你的素材没丢、换最新链接进来」，而不是一句含糊的「不存在或已结束」。
+    return NextResponse.json(
+      {
+        error:
+          "这个共创链接已失效：活动可能已被重置或删除。你的内容没有丢失，换一个最新的入口链接重新进来即可。",
+      },
+      { status: 404 },
+    );
   }
   if (campaign.status !== "active") {
-    return NextResponse.json({ error: "活动已结束，感谢你的参与" }, { status: 400 });
+    return NextResponse.json({ error: "活动已结束，感谢你的参与。" }, { status: 400 });
   }
 
   let form: FormData;

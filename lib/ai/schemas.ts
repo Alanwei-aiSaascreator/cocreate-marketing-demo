@@ -44,23 +44,33 @@ export const rewardTierSchema = z.object({
   value: z.number().catch(0),
 });
 
-export const blueprintSchema = z.object({
-  frames: z.array(platformFrameSchema).min(1),
-  taskCard: z.array(taskFieldSchema).min(3),
-  rewardTiers: z.array(rewardTierSchema).min(1),
-});
-
 export const composedContentSchema = z.object({
   platform: platformEnum,
-  title: z.string().min(1),
+  // 朋友圈这类平台本来就没有标题，模型留空是合理的，绝不能因此判整批失败。
+  // 空标题由归一化步骤补兜底值。实测踩过：一个空 title 让 4 个平台全部退回模板。
+  title: z.string().catch(""),
   body: z.string().min(1),
   tags: z.array(z.string()).catch([]),
   coverHint: z.string().catch(""),
   complianceNote: z.string().catch(""),
 });
 
+/**
+ * 两个 bundle 都是**逐条校验的容器**，不是整批校验的契约。
+ *
+ * 早先写的是 `z.array(composedContentSchema).min(1)`，结果模型只要有一条内容的
+ * 某个字段不合规，整批产出就被判失败、四个平台全部降级到模板 —— 一次小瑕疵
+ * 吃掉全部 AI 产出。现在容器只校验「是个数组」，每条由调用方逐条 safeParse：
+ * 坏一条只放弃那一条，并由规则引擎单独补齐。
+ */
+export const blueprintSchema = z.object({
+  frames: z.array(z.unknown()).catch([]),
+  taskCard: z.array(z.unknown()).catch([]),
+  rewardTiers: z.array(z.unknown()).catch([]),
+});
+
 export const composeBundleSchema = z.object({
-  contents: z.array(composedContentSchema).min(1),
+  contents: z.array(z.unknown()).min(1),
 });
 
 // ── 校验通过后的宽松载荷类型（待归一化）──────────────────
@@ -79,11 +89,12 @@ export type RawComposedContent = Partial<ComposedContent> & {
 };
 
 export type BlueprintPayload = {
-  frames: RawPlatformFrame[];
-  taskCard: RawTaskField[];
-  rewardTiers: RawRewardTier[];
+  /** 未逐条校验的原始元素，由调用方 safeParse 后再归一化 */
+  frames: unknown[];
+  taskCard: unknown[];
+  rewardTiers: unknown[];
 };
 
 export type ComposeBundlePayload = {
-  contents: RawComposedContent[];
+  contents: unknown[];
 };

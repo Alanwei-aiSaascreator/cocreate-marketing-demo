@@ -7,7 +7,14 @@
  * 用法：先 `pnpm dev`，另开终端跑 `node scripts/smoke-test.mjs`
  *      BASE_URL 可用环境变量覆盖，默认 http://localhost:3000
  */
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const envPath = join(process.cwd(), ".env");
 const BASE = (process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+
+// 读 .env 判断是否配置了模型 key —— 决定「必须走大模型」这条断言是否适用
+const envText = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
 
 let passed = 0;
 let failed = 0;
@@ -177,6 +184,25 @@ async function main() {
       `首次参与即解锁福利`,
       (submission.rewards ?? []).map((r) => r.title).join(" / ") || "无",
     );
+
+    // 关键回归断言：「配置了模型却静默降级」是最危险的失败模式 ——
+    // 界面上一切正常，但内容其实是模板拼的，产品主张直接落空。
+    // 实测踩过：模型有一条内容的 title 为空，导致 4 个平台全部退回模板。
+    const hasKey = /LLM_API_KEY\s*=\s*["']?[^"'\s]+/.test(envText);
+    if (hasKey) {
+      check(
+        submission.aiMode === "llm",
+        "AI 加工走了大模型（未静默降级）",
+        `aiMode=${submission.aiMode}｜${submission.aiNote}`,
+      );
+      check(
+        !/降级|补齐|不合法/.test(submission.aiNote ?? ""),
+        "本次无需规则引擎兜底",
+        submission.aiNote ?? "",
+      );
+    } else {
+      ok("未配置模型 key，按预期走规则引擎", `aiMode=${submission.aiMode}`);
+    }
   } catch (err) {
     fail("提交素材", err.message);
     console.log("\n\x1b[31m提交失败，后续步骤无法继续。\x1b[0m");
@@ -262,6 +288,30 @@ async function main() {
     check(ws.ok, "奖励账本页可访问", `HTTP ${ws.status}`);
   } catch (err) {
     fail("核销页", err.message);
+  }
+
+  // ── 8. 演示固定入口 ────────────────────────────────────
+  // 这一段是回归断言：曾经因为「重跑种子数据 → 随机 token 变化 → 已发出的演示链接失效」，
+  // 导致老客提交时报「活动已结束」。固定 token + 下面的断言把这个坑钉死。
+  section("8. 演示固定入口（种子数据）");
+  const DEMO_TOKEN = "demo-cocreate";
+  try {
+    const res = await fetch(`${BASE}/c/${DEMO_TOKEN}`);
+    check(res.ok, `演示入口 /c/${DEMO_TOKEN} 可访问`, `HTTP ${res.status}`);
+
+    const me = await fetch(`${BASE}/c/${DEMO_TOKEN}/me`);
+    check(me.ok, "演示入口的「我的贡献」页可访问", `HTTP ${me.status}`);
+
+    // 失效链接必须优雅降级，而不是甩一个默认 404
+    const dead = await fetch(`${BASE}/c/this-token-is-dead`);
+    const deadHtml = await dead.text();
+    check(
+      dead.status === 404 && deadHtml.includes("这个共创链接已失效"),
+      "失效链接渲染友好的引导页（而非默认 404）",
+      `HTTP ${dead.status}`,
+    );
+  } catch (err) {
+    fail("演示固定入口", err.message);
   }
 
   // ── 汇总 ───────────────────────────────────────────────

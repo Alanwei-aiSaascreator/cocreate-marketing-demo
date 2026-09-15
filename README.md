@@ -112,6 +112,10 @@ pnpm dev
 
 打开 http://localhost:3000 —— 落地页有「商家工作台」和「老客 H5」两个入口。
 
+> **演示活动的入口地址是固定的**：http://localhost:3000/c/demo-cocreate
+> 种子数据用的是固定 token 而不是随机短码，所以**反复 `pnpm db:reset` 也不会让这个链接失效** ——
+> 演示前重置数据是高频动作，链接不能跟着变。
+
 ### 验证闭环是否跑通
 
 ```bash
@@ -138,6 +142,7 @@ node scripts/smoke-test.mjs
 ## 演示脚本（约 5 分钟）
 
 **准备**：`pnpm db:seed && pnpm dev`，浏览器开 `/merchant`，手机连同一局域网待用。
+老客入口固定为 `/c/demo-cocreate`，重置数据后依然可用。
 
 1. **商家建活动（0:00–1:30）** —— `/merchant/campaigns/new`
    选已有店铺「椒香里·重庆老火锅」，营销目标选「团购转化」，勾选 4 个平台，点生成。

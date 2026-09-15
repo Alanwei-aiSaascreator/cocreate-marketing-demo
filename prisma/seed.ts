@@ -17,11 +17,17 @@ import { ruleBlueprint, ruleCompose } from "../lib/ai/rules";
 import { detectRisks } from "../lib/domain/risk";
 import { scoreSubmission, adoptPointItem, clickPointItem, CLICK_POINT, CLICK_CAP } from "../lib/domain/scoring";
 import { tiersToGrant } from "../lib/domain/reward";
-import { campaignToken, shareToken, viewerToken } from "../lib/ids";
+import { shareToken, viewerToken } from "../lib/ids";
 import type { Platform, PlatformFrame, RewardTier, TaskField } from "../lib/types";
 
 const prisma = new PrismaClient();
 const UPLOAD_DIR = join(process.cwd(), "public", "uploads");
+
+/**
+ * 演示活动的固定入口短码。
+ * 固定而非随机，这样反复重跑种子数据也不会让已经发出去的演示链接失效。
+ */
+export const DEMO_PUBLIC_TOKEN = "demo-cocreate";
 
 // ── 占位实拍图 ────────────────────────────────────────────
 // Demo 用程序生成的 SVG 占位图，避免把别人的照片放进仓库。
@@ -121,7 +127,10 @@ async function main() {
       rewardTiers: JSON.stringify(blueprint.rewardTiers),
       aiMode: "rule",
       aiNote: blueprint.note,
-      publicToken: campaignToken(),
+      // 固定 token，不用随机短码。
+      // 原因：随机 token 意味着每次重跑种子都会让已发出去的演示链接失效，
+      // 而"重置演示数据"是演示前的高频动作。固定下来，链接永远可用。
+      publicToken: DEMO_PUBLIC_TOKEN,
       status: "active",
     },
   });
