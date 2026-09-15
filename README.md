@@ -145,7 +145,7 @@ node scripts/smoke-test.mjs   # 需要先 pnpm dev
 
 会把整个闭环真跑一遍：建活动（**真实调用大模型**）→ H5 提交素材 → 四平台加工 →
 贡献值结算 → 防刷规则 → 引流回流加分 → 商家采用 → 福利核销 →
-AI 质量可观测性 → **数据库唯一约束是否真的在兜底**。共 39 项断言。
+AI 质量可观测性 → **数据库唯一约束是否真的在兜底**。共 45 项断言（随入库样例数量略有浮动）。
 
 跑完会**自动清理**自己建的测试活动，不会污染演示列表（`KEEP_SMOKE_DATA=1` 可保留）。
 部署设了 `MERCHANT_PASSWORD` 时会自己登录，两种模式都能跑。
@@ -173,6 +173,20 @@ pnpm verify:promises   # 不需要 dev server
 | `MERCHANT_PASSWORD` | 商家后台口令。**留空 = 演示模式**，商家接口完全放开（界面顶部会显示「演示模式 · 未鉴权」横幅）。填上后 `/merchant/*` 与 `/api/merchant/*` 都需要先过口令页，未授权页面 307 跳转、接口 401 |
 
 > `.env` 已在 `.gitignore` 中，**不会被提交**；仓库里只有 `.env.example`。
+
+### 跑不起来？先看这三条
+
+都是本项目**实际踩到过**的坑，报错信息和对应处理照抄即可：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 页面/接口**间歇性 500**，终端里出现 `SyntaxError: Unexpected end of JSON input` 或 `Cannot find module './xxx.js'`，且日志紧挨着有一行 `○ Compiling /_error ...` | `.next` 构建缓存损坏（dev server 长时间运行、或被强杀过）。这是 Next dev 的缓存问题，**不是业务代码报错** | 停掉 dev server → 删掉 `.next` 目录 → `pnpm dev` 重启。**不要去改业务代码** |
+| `P1012 Environment variable not found: DATABASE_URL` | `.env` 没生成。`postinstall` 负责从 `.env.example` 拷贝，跳过 `pnpm install` 就会缺 | 手工复制一份 `.env`（内容照抄 `.env.example`） |
+| `EPERM: rename ... query_engine-windows.dll.node` | dev server 正占用着 Prisma 引擎文件，`prisma generate` 改不动它 | 先停 dev server，再跑 `pnpm db:push` / `prisma generate` |
+
+> 排查这类问题的正确姿势是**看 dev server 自己的终端输出**。上面那条间歇性 500 的真实原因
+> （缓存文件解析失败）就写在它的 stderr 里 —— 只看浏览器或只看测试脚本的报错，
+> 很容易把它误判成业务 bug。
 
 ---
 
@@ -308,7 +322,7 @@ pnpm setup         # generate + push + seed 一条龙
 pnpm demo:ai       # 用真实大模型重跑种子内容（演示前跑一次，见下）
 pnpm demo:mine     # 重建「你自己的演示活动」（走真实大模型，可反复执行）
 pnpm verify:promises          # 验证「注释承诺 == 代码行为」（12 项，不需要 dev server）
-node scripts/smoke-test.mjs   # 端到端冒烟测试（39 项，需先 pnpm dev）
+node scripts/smoke-test.mjs   # 端到端冒烟测试（45 项，需先 pnpm dev）
 npx tsx scripts/compare-engines.ts   # 同一份老客素材，规则引擎 vs 大模型产出并排对比
 ```
 

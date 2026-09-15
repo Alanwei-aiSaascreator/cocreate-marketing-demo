@@ -83,6 +83,27 @@ function check(cond, name, detail = "") {
   return cond;
 }
 
+/**
+ * 解析 JSON 响应。
+ *
+ * 为什么不直接用 res.json()：一旦服务端返回 HTML（Next dev 在重建模块图时
+ * 可能短暂返回错误页），res.json() 只会抛一句 `Unexpected token '<'` ——
+ * 看不出是哪个请求、什么状态码、服务端到底说了什么，排查全靠猜。
+ * 这里先读文本再解析，失败时把状态码和响应片段一起报出来。
+ */
+async function readJson(res, label) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const ct = res.headers.get("content-type") || "?";
+    const snippet = text.replace(/\s+/g, " ").trim().slice(0, 200);
+    throw new Error(
+      `${label} 返回的不是 JSON（HTTP ${res.status}，content-type=${ct}）：${snippet}`,
+    );
+  }
+}
+
 function section(title) {
   console.log(`\n\x1b[1m${title}\x1b[0m`);
 }
@@ -147,7 +168,7 @@ async function main() {
         },
       }),
     });
-    campaign = await res.json();
+    campaign = await readJson(res, "创建活动");
     if (!res.ok) throw new Error(campaign.error || `HTTP ${res.status}`);
 
     check(!!campaign.campaignId, "创建活动返回 campaignId");
@@ -204,7 +225,7 @@ async function main() {
       body: form,
       headers: cookie ? { cookie } : {},
     });
-    submission = await res.json();
+    submission = await readJson(res, "提交素材");
     if (!res.ok) throw new Error(submission.error || `HTTP ${res.status}`);
 
     check(submission.ok && !submission.blocked, "素材通过风控入库");
@@ -284,7 +305,7 @@ async function main() {
       headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) },
       body: JSON.stringify({ shareToken, type: "click" }),
     });
-    const data = await res.json();
+    const data = await readJson(res, "上报自点");
     check(
       res.ok && data.credited === false,
       "自己点自己的分享不计引流贡献",
@@ -302,7 +323,7 @@ async function main() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ shareToken, type: "click" }),
     });
-    const data = await res.json();
+    const data = await readJson(res, "上报陌生访客点击");
     check(
       res.ok && data.credited === true && data.gainedPoints > 0,
       "陌生访客点击产生有效回流并给贡献者加分",
@@ -320,7 +341,7 @@ async function main() {
       headers: { "Content-Type": "application/json", ...merchantHeaders },
       body: JSON.stringify({ adopted: true }),
     });
-    const data = await res.json();
+    const data = await readJson(res, "商家采用");
     check(res.ok && data.adopted === true, "采用成功");
     check(data.campaignPoints > submission.campaignPoints, "采用后贡献值上涨", `${submission.campaignPoints} → ${data.campaignPoints}`);
 
@@ -330,7 +351,7 @@ async function main() {
       headers: { "Content-Type": "application/json", ...merchantHeaders },
       body: JSON.stringify({ adopted: true }),
     });
-    const againData = await again.json();
+    const againData = await readJson(again, "重复采用（幂等）");
     check(
       againData.campaignPoints === data.campaignPoints,
       "重复点采用不重复加分（幂等）",
@@ -499,7 +520,7 @@ async function main() {
   section("11. AI 设置页与密钥安全");
   try {
     const api = await fetch(`${BASE}/api/merchant/settings/ai`);
-    const data = await api.json();
+    const data = await readJson(api, "AI 设置接口");
     check(api.ok, "设置接口可访问", `HTTP ${api.status}`);
     check(
       typeof data.apiKeySource === "string" && typeof data.enabled === "boolean",
@@ -540,7 +561,7 @@ async function main() {
   // 用固定的测试店铺名做清理锚点（cascade 会连带删掉活动/素材/内容/奖励）。
   // 设 KEEP_SMOKE_DATA=1 可以保留，方便事后翻看。
   if (process.env.KEEP_SMOKE_DATA !== "1") {
-    section("10. 清理测试数据");
+    section("12. 清理测试数据");
     const prisma = new PrismaClient();
     try {
       const { count } = await prisma.merchant.deleteMany({ where: { name: SMOKE_MERCHANT } });
