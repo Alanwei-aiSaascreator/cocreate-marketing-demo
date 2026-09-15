@@ -121,7 +121,7 @@ pnpm dev
 ### 验证闭环是否跑通
 
 ```bash
-node scripts/smoke-test.mjs
+node scripts/smoke-test.mjs   # 需要先 pnpm dev
 ```
 
 会把整个闭环真跑一遍：建活动（**真实调用大模型**）→ H5 提交素材 → 四平台加工 →
@@ -129,6 +129,18 @@ node scripts/smoke-test.mjs
 AI 质量可观测性 → **数据库唯一约束是否真的在兜底**。共 39 项断言。
 
 跑完会**自动清理**自己建的测试活动，不会污染演示列表（`KEEP_SMOKE_DATA=1` 可保留）。
+部署设了 `MERCHANT_PASSWORD` 时会自己登录，两种模式都能跑。
+
+### 验证「注释承诺 == 代码行为」
+
+```bash
+pnpm verify:promises   # 不需要 dev server
+```
+
+这个脚本专门守一类最难发现的问题：**注释/文案承诺了，代码没做。**
+本项目实测踩到过 4 处（`LLM_MODE=llm` 声称失败即报错、频次提示声称超出不计分、
+禁词提示声称 AI 会替换、`compare-engines` 声称会报错暴露），全部改对后
+用这个脚本钉住，避免退化回去。改动 AI 层或计分规则后请重跑。
 
 ### 环境变量
 
