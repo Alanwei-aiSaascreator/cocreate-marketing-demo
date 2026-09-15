@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+/* ── 设计令牌 ──────────────────────────────────────────────
+   本地生活场景的暖色调主色（食欲 / 烟火气），中性灰做骨架。
+   不引外部字体：构建期不联网，演示现场断网也不掉样式。 */
+
+@theme {
+  --color-brand-50: #fff7ed;
+  --color-brand-100: #ffedd5;
+  --color-brand-200: #fed7aa;
+  --color-brand-300: #fdba74;
+  --color-brand-400: #fb923c;
+  --color-brand-500: #f97316;
+  --color-brand-600: #ea580c;
+  --color-brand-700: #c2410c;
+
+  --color-ink-50: #f8fafc;
+  --color-ink-100: #f1f5f9;
+  --color-ink-200: #e2e8f0;
+  --color-ink-300: #cbd5e1;
+  --color-ink-400: #94a3b8;
+  --color-ink-500: #64748b;
+  --color-ink-600: #475569;
+  --color-ink-700: #334155;
+  --color-ink-800: #1e293b;
+  --color-ink-900: #0f172a;
+
+  --color-xhs: #ff2442;
+  --color-douyin: #161823;
+  --color-dianping: #ff6633;
+  --color-moments: #07c160;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+
+  --radius-card: 16px;
+}
+
+html,
+body {
+  background: var(--color-ink-50);
+  color: var(--color-ink-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 移动端 H5 里禁止横向滚动，避免布局溢出破坏演示观感 */
+body {
+  overflow-x: hidden;
+}
+
+/* ── 少量复用组件类 ─────────────────────────────────────── */
+
+@layer components {
+  .card {
+    background: #ffffff;
+    border: 1px solid var(--color-ink-200);
+    border-radius: var(--radius-card);
+  }
+
+  .card-hover {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .card-hover:hover {
+    border-color: var(--color-brand-300);
+    box-shadow: 0 6px 24px -8px rgb(249 115 22 / 0.25);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: 10px;
+    font-weight: 500;
+    font-size: 14px;
+    padding: 9px 16px;
+    transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--color-brand-500);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-brand-600);
+  }
+
+  .btn-ghost {
+    background: #fff;
+    color: var(--color-ink-700);
+    border: 1px solid var(--color-ink-200);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    border-color: var(--color-ink-300);
+    background: var(--color-ink-50);
+  }
+
+  .field {
+    width: 100%;
+    border: 1px solid var(--color-ink-200);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 14px;
+    background: #fff;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .field:focus {
+    border-color: var(--color-brand-400);
+    box-shadow: 0 0 0 3px rgb(249 115 22 / 0.12);
+  }
+
+  .label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-ink-700);
+    margin-bottom: 6px;
+  }
+
+  .hint {
+    font-size: 12px;
+    color: var(--color-ink-500);
+    line-height: 1.6;
+  }
+}
+
+/* 内容正文保持换行与可读性 */
+.content-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.75;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.25s ease-out both;
+}

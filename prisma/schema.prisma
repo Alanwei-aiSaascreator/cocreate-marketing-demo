@@ -1,0 +1,227 @@
+// 共创营销 Demo · 数据模型
+// 注意：SQLite 不支持 enum / Json / 数组，所有结构化字段统一用 String 存 JSON，
+// 在 lib/json.ts 里做类型化读写。这样换成 Postgres 时字段无需改动。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// 商家：AI 生成内容的「边界」由这里决定
+model Merchant {
+  id       String  @id @default(cuid())
+  name     String
+  category String // 品类：火锅 / 咖啡 / 美甲 ...
+  city     String
+  address  String?
+  /// 人均消费（单位：元），本地生活内容的决策关键信息
+  avgPrice Int?
+  /// JSON string[] 品牌调性关键词，约束 AI 语气
+  tones         String @default("[]")
+  /// JSON string[] 卖点
+  sellingPoints String @default("[]")
+  /// JSON string[] 合规禁词（绝对化用语、医疗功效等）
+  bannedWords   String @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns Campaign[]
+}
+
+/// 共创活动：一个活动 = 一批平台框架 + 一张用户任务卡 + 一套奖励阶梯
+model Campaign {
+  id         String   @id @default(cuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  title     String
+  /// 到店打卡 / 团购转化 / 口碑沉淀 / 新客拉新
+  objective String
+  /// JSON Platform[] —— 本次要覆盖的平台
+  platforms String @default("[]")
+  brief     String @default("")
+
+  /// ↓↓ AI 生成物（商家可改） ↓↓
+  /// JSON PlatformFrame[] 各平台内容框架：调性、结构、必含信息、字数码、话题标签
+  frames      String @default("[]")
+  /// JSON TaskField[] 派给老客的轻量任务卡（只让填空，不让写作文）
+  taskCard    String @default("[]")
+  /// JSON RewardTier[] 奖励阶梯
+  rewardTiers String @default("[]")
+  /// llm = 走了真模型；rule = 走了降级规则引擎
+  aiMode   String @default("rule")
+  aiNote   String @default("")
+
+  status String @default("active") // draft | active | closed
+  /// 免登录 H5 入口短码，扫码/分享都用它
+  publicToken String @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submissions   Submission[]
+  contents      GeneratedContent[]
+  contributions Contribution[]
+  rewards       Reward[]
+  events        TrackEvent[]
+
+  @@index([merchantId])
+}
+
+/// 老客（共创贡献者）：免登录，靠 viewerToken 认人，跨活动累计贡献
+model Contributor {
+  id          String @id @default(cuid())
+  /// H5 首次进入时下发、存在浏览器 localStorage，替代账号体系
+  viewerToken String @unique
+  nickname    String
+  avatarEmoji String @default("🙂")
+  phone       String?
+  /// qr / link / seed
+  sourceChannel String @default("link")
+  /// 累计贡献值（冗余缓存，方便榜单直读）
+  totalPoints Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submissions   Submission[]
+  contributions Contribution[]
+  rewards       Reward[]
+}
+
+/// 素材提交：老客只做结构化填空 + 一张实拍图
+model Submission {
+  id            String      @id @default(cuid())
+  campaignId    String
+  campaign      Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contributorId String
+  contributor   Contributor @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+
+  /// JSON Record<string,string> 按 taskCard 的字段 id 存答案
+  answers  String @default("{}")
+  imageUrl String?
+  /// 图片内容 hash，用于查重反刷
+  imageHash String?
+
+  status String @default("processed") // processed | adopted | rejected
+  /// JSON RiskFlag[] 风控标记，可解释
+  riskFlags String @default("[]")
+  /// 本次提交结算到的贡献值
+  points Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contents      GeneratedContent[]
+  contributions Contribution[]
+  events        TrackEvent[]
+
+  @@index([campaignId])
+  @@index([contributorId])
+}
+
+/// AI 产出：同一份老客素材 → 各平台不同调性的内容
+model GeneratedContent {
+  id           String     @id @default(cuid())
+  campaignId   String
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  platform String // xiaohongshu | douyin | dianping
+  title    String
+  body     String
+  /// JSON string[] 话题标签
+  tags String @default("[]")
+  /// 封面/配图建议
+  coverHint String @default("")
+  /// 合规自检提示
+  complianceNote String @default("")
+  /// llm | rule —— 演示时可直接展示降级是否生效
+  aiMode String @default("rule")
+
+  adopted   Boolean   @default(false)
+  adoptedAt DateTime?
+
+  /// 内容短码，用于生成可追踪的分享链接（引流归因）
+  shareToken String @unique
+
+  createdAt DateTime @default(now())
+
+  events TrackEvent[]
+
+  @@index([campaignId])
+  @@index([submissionId])
+}
+
+/// 贡献记录：分值必须可拆解、可解释，而不是一个黑盒数字
+model Contribution {
+  id            String      @id @default(cuid())
+  campaignId    String
+  campaign      Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contributorId String
+  contributor   Contributor @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+  submissionId  String?
+  submission    Submission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+
+  /// JSON PointItem[] { label, points, note }
+  breakdown String @default("[]")
+  points    Int    @default(0)
+  reason    String @default("")
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([contributorId])
+}
+
+/// 奖励账本：优先发店铺福利（券/赠品），而不是现金
+model Reward {
+  id            String      @id @default(cuid())
+  campaignId    String
+  campaign      Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contributorId String
+  contributor   Contributor @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+
+  tierName String
+  /// coupon | gift
+  type     String @default("coupon")
+  title    String
+  /// 面额，单位：分
+  value    Int    @default(0)
+  code     String @unique
+  /// issued | redeemed | expired
+  status     String    @default("issued")
+  issuedAt   DateTime  @default(now())
+  redeemedAt DateTime?
+
+  @@index([campaignId])
+  @@index([contributorId])
+}
+
+/// 行为事件：引流归因的钩子。
+/// 这张表让「奖励绑定真实引流效果」在 Demo 里就能跑通，而不是一句口号。
+model TrackEvent {
+  id           String  @id @default(cuid())
+  /// view | share | click | redeem
+  type         String
+  campaignId   String
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  submissionId String?
+  submission   Submission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  contentId    String?
+  content      GeneratedContent? @relation(fields: [contentId], references: [id], onDelete: SetNull)
+
+  /// JSON Record<string,string> 渠道、UA 摘要等
+  meta String @default("{}")
+
+  createdAt DateTime @default(now())
+
+  @@index([campaignId, type])
+  @@index([contentId])
+}

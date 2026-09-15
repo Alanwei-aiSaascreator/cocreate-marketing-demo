@@ -1,0 +1,8 @@
+# pnpm 10+/11+ 默认拦截依赖的构建脚本，这里显式放行本项目需要的。
+# 少了这几条，别人 clone 下来 `pnpm install` 会装不出可用的 Prisma Client。
+allowBuilds:
+  unrs-resolver: true
+  prisma: true
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true

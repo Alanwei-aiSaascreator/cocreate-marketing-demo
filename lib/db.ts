@@ -1,0 +1,17 @@
+import { PrismaClient } from "@prisma/client";
+
+/**
+ * Next.js 开发模式下模块会被热重载，每次都 new 一个 PrismaClient 会把
+ * SQLite 的连接数打满，所以挂到 globalThis 上复用。
+ */
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
+  });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
