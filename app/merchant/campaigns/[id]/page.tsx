@@ -18,6 +18,7 @@ import { ContentLibrary } from "@/components/ContentLibrary";
 import { QrCard } from "@/components/QrCard";
 import { RedeemButton } from "@/components/actions";
 import { RerunButton } from "@/components/RerunButton";
+import { CampaignStatusButton } from "@/components/CampaignStatusButton";
 import { cn, formatDateTime, timeAgo, yuan } from "@/lib/utils";
 import { PLATFORM_META, type RiskFlag } from "@/lib/types";
 
@@ -64,6 +65,9 @@ export default async function WorkspacePage({
                 {merchant.city} · {merchant.name}
               </span>
               <Badge tone="brand">{campaign.objective}</Badge>
+              <Badge tone={campaign.status === "active" ? "green" : "gray"}>
+                {campaign.status === "active" ? "进行中" : "已结束"}
+              </Badge>
               {campaign.platforms.map((p) => (
                 <PlatformBadge key={p} platform={p} />
               ))}
@@ -77,6 +81,7 @@ export default async function WorkspacePage({
               </Badge>
             )}
             <AiModeTag mode={campaign.aiMode} note={campaign.aiNote} />
+            <CampaignStatusButton campaignId={campaign.id} status={campaign.status} />
             <RerunButton campaignId={campaign.id} />
           </div>
         </div>

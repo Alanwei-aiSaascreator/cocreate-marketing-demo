@@ -81,15 +81,32 @@ export default async function H5Page({
         </p>
       </div>
 
-      <div className="mt-5">
-        <SubmitForm
-          token={token}
-          taskCard={campaign.taskCard}
-          rewardTiers={campaign.rewardTiers}
-          nickname={contributor.nickname}
-          currentPoints={currentPoints}
-        />
-      </div>
+      {/* 活动已结束：必须在**渲染时**就拦下来。
+          原来这里不看 status，老客会把表单填完、照片传完，
+          提交那一刻才被告知活动结束了 —— 最糟的一种体验。 */}
+      {campaign.status !== "active" ? (
+        <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <div className="text-[14px] font-semibold text-amber-900">本次活动已结束</div>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-amber-800">
+            商家已经关闭了这次共创，暂时不能再提交新素材。
+            <strong className="font-medium">但你之前贡献的成果和拿到的福利都还在</strong>
+            —— 已发的券仍然可以到店核销。
+          </p>
+          <a href={`/c/${token}/me`} className="btn btn-primary mt-3 w-full">
+            查看我的贡献与福利
+          </a>
+        </div>
+      ) : (
+        <div className="mt-5">
+          <SubmitForm
+            token={token}
+            taskCard={campaign.taskCard}
+            rewardTiers={campaign.rewardTiers}
+            nickname={contributor.nickname}
+            currentPoints={currentPoints}
+          />
+        </div>
+      )}
     </div>
   );
 }

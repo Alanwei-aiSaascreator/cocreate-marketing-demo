@@ -184,6 +184,8 @@ pnpm verify:promises   # 不需要 dev server
    「素材与风控」Tab：看那几条被故意埋进去的坏样本 —— 重复图、含微信联系方式、写违禁词、没传图，
    每条拦截/提醒都有**可读的理由**。
    「奖励账本」Tab：核销一张券。
+   头部还有「**结束活动**」按钮 —— 点一下再看 H5，会显示"活动已结束"而不是提交表单
+   （老客已拿到的券仍然保留并可核销）。
 
 5. **收尾（4:30–5:00）** —— 两个可选的加分项：
    - 切 `LLM_MODE=rule` 重启，重跑一遍第 1 步，说明**断网 / 没 key 时 Demo 依然完整可跑**，
@@ -278,14 +280,20 @@ TrackEvent        行为：view / share / click / redeem —— 引流归因钩�
 
 ```bash
 pnpm dev           # 开发服务器
-pnpm build         # 生产构建
+pnpm build         # 生产构建（输出到 .next-build，不会覆盖 dev 的 .next）
+pnpm start         # 跑生产构建（与 build 用同一目录）
 pnpm db:push       # 同步 schema 到 SQLite
 pnpm db:seed       # 载入演示数据（离线可复现）
 pnpm db:reset      # 重置数据库 + 重新载入
 pnpm setup         # generate + push + seed 一条龙
-node scripts/smoke-test.mjs   # 端到端冒烟测试（需先 pnpm dev）
+pnpm demo:mine     # 重建「你自己的演示活动」（走真实大模型，可反复执行）
+pnpm verify:promises          # 验证「注释承诺 == 代码行为」（12 项，不需要 dev server）
+node scripts/smoke-test.mjs   # 端到端冒烟测试（39 项，需先 pnpm dev）
 npx tsx scripts/compare-engines.ts   # 同一份老客素材，规则引擎 vs 大模型产出并排对比
 ```
+
+> ⚠️ **`pnpm db:seed` / `db:reset` 会清空所有表** —— 包括你手工建的活动和 H5 提交记录。
+> 这是种子数据的正常行为。演示前重置数据后用 `pnpm demo:mine` 把"你自己的活动"建回来。
 
 > `compare-engines.ts` 是理解本项目 AI 层最直观的方式：两个引擎吃同一份输入、
 > 吐同一个结构，差别只在内容质量。强制走大模型（`LLM_MODE=llm`），

@@ -10,6 +10,7 @@ import { readViewerToken } from "@/lib/viewer";
 import { Badge, ProgressBar, PlatformBadge } from "@/components/ui";
 import { ShareActionButton } from "@/components/ShareActionButton";
 import { tierProgress } from "@/lib/domain/reward";
+import { CLICK_CAP } from "@/lib/domain/scoring";
 import { formatDateTime, yuan } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,12 @@ export default async function MyContributionPage({
   if (!dash) notFound();
 
   const progress = tierProgress(dash.contributor.campaignPoints, campaign.rewardTiers);
+
+  // 引流加分单独算：它由点击回流驱动，和"提交素材"挣的分不是一回事，
+  // 分开显示才能让老客明白"分享真的能换分"。
+  const clickPoints = dash.contributions
+    .filter((c) => c.reason.startsWith("内容带来"))
+    .reduce((sum, c) => sum + c.points, 0);
 
   return (
     <div className="space-y-4 px-4 pb-8 pt-4">
@@ -60,6 +67,32 @@ export default async function MyContributionPage({
             </span>
           </div>
         </div>
+
+        {/* 引流效果反馈。
+            老客原来只看得到自己拿了多少分，看不到「分享出去到底有没有用」——
+            而分享是唯一能带来新客的动作，没有反馈就不会有人持续做。
+            点击加分封顶 50，所以这里同时把封顶状态说清楚，避免"怎么不加了"的困惑。 */}
+        <div className="mt-3 flex items-center justify-between border-t border-brand-200 pt-3">
+          <div>
+            <div className="text-[12px] text-ink-500">你的分享带来的有效点击</div>
+            <div className="mt-0.5 flex items-baseline gap-1">
+              <span className="text-lg font-semibold tabular-nums text-ink-900">
+                {dash.totalClicks}
+              </span>
+              <span className="text-[11px] text-ink-400">次</span>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-[12px] text-ink-500">引流加分</div>
+            <div className="mt-0.5 text-[15px] font-semibold tabular-nums text-brand-600">
+              {clickPoints}
+              <span className="ml-0.5 text-[11px] font-normal text-ink-400">/ {CLICK_CAP}</span>
+            </div>
+          </div>
+        </div>
+        {clickPoints >= CLICK_CAP && (
+          <p className="hint mt-2">引流加分已达封顶 {CLICK_CAP} —— 继续分享不再加分，但能带来更多新客。</p>
+        )}
       </div>
 
       {/* 我的福利 */}
@@ -172,6 +205,11 @@ export default async function MyContributionPage({
                       >
                         <PlatformBadge platform={c.platform} />
                         {c.adopted && <span className="text-emerald-600">已采用</span>}
+                        {c.clicks > 0 && (
+                          <span className="rounded bg-brand-50 px-1 font-medium text-brand-700">
+                            {c.clicks} 次点击
+                          </span>
+                        )}
                       </Link>
                     ))}
                     {/* 复制分享文案会记一次 share 事件 —— 工作台的「分享次数」由此变真 */}

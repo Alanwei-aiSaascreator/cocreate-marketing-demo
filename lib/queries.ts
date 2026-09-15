@@ -530,13 +530,16 @@ export async function getContributorCampaignPoints(
   return agg._sum.points ?? 0;
 }
 
-export interface ContributorDashboard {  contributor: {
+export interface ContributorDashboard {
+  contributor: {
     id: string;
     nickname: string;
     avatarEmoji: string;
     totalPoints: number;
     campaignPoints: number;
   };
+  /** 本次活动里，这位老客的内容共带来多少次有效点击回流 */
+  totalClicks: number;
   submissions: {
     id: string;
     answers: Record<string, string>;
@@ -545,7 +548,16 @@ export interface ContributorDashboard {  contributor: {
     points: number;
     riskFlags: RiskFlag[];
     createdAt: Date;
-    contents: { id: string; platform: Platform; title: string; body: string; adopted: boolean; shareToken: string }[];
+    contents: {
+      id: string;
+      platform: Platform;
+      title: string;
+      body: string;
+      adopted: boolean;
+      shareToken: string;
+      /** 这条内容带来了几次有效点击回流 */
+      clicks: number;
+    }[];
   }[];
   contributions: { id: string; points: number; reason: string; breakdown: PointItem[]; createdAt: Date }[];
   rewards: { id: string; tierName: string; title: string; type: string; value: number; code: string; status: string }[];
@@ -582,6 +594,26 @@ export async function getContributorDashboard(
     }),
   ]);
 
+  // 按内容统计「这条分享带来了几次有效回流」。
+  //
+  // 为什么要单独查：老客的激励闭环缺了最后一环 —— 他看得到自己拿了多少贡献值，
+  // 但看不到「我分享出去到底有没有用」。而分享是唯一能带来新客的动作，
+  // 没有反馈就不会有人持续做。
+  const submissionIds = submissions.map((s) => s.id);
+  const clickRows = submissionIds.length
+    ? await prisma.trackEvent.groupBy({
+        by: ["contentId"],
+        where: { submissionId: { in: submissionIds }, type: "click" },
+        _count: { _all: true },
+      })
+    : [];
+  const clicksByContent = new Map<string, number>();
+  for (const row of clickRows) {
+    if (row.contentId) clicksByContent.set(row.contentId, row._count._all);
+  }
+
+  const submissionClicks = new Map<string, number>();
+
   return {
     contributor: {
       id: contributor.id,
@@ -590,23 +622,32 @@ export async function getContributorDashboard(
       totalPoints: globalAgg._sum.points ?? 0,
       campaignPoints: agg._sum.points ?? 0,
     },
-    submissions: submissions.map((s) => ({
-      id: s.id,
-      answers: parseJson<Record<string, string>>(s.answers, {}),
-      imageUrl: s.imageUrl,
-      status: s.status,
-      points: s.points,
-      riskFlags: parseJson<RiskFlag[]>(s.riskFlags, []),
-      createdAt: s.createdAt,
-      contents: s.contents.map((c) => ({
+    totalClicks: Array.from(clicksByContent.values()).reduce((a, b) => a + b, 0),
+    submissions: submissions.map((s) => {
+      const contents = s.contents.map((c) => ({
         id: c.id,
         platform: c.platform as Platform,
         title: c.title,
         body: c.body,
         adopted: c.adopted,
         shareToken: c.shareToken,
-      })),
-    })),
+        clicks: clicksByContent.get(c.id) ?? 0,
+      }));
+      submissionClicks.set(
+        s.id,
+        contents.reduce((sum, c) => sum + c.clicks, 0),
+      );
+      return {
+        id: s.id,
+        answers: parseJson<Record<string, string>>(s.answers, {}),
+        imageUrl: s.imageUrl,
+        status: s.status,
+        points: s.points,
+        riskFlags: parseJson<RiskFlag[]>(s.riskFlags, []),
+        createdAt: s.createdAt,
+        contents,
+      };
+    }),
     contributions: contributions.map((c) => ({
       id: c.id,
       points: c.points,
