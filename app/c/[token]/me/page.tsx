@@ -8,6 +8,7 @@ import {
 } from "@/lib/queries";
 import { readViewerToken } from "@/lib/viewer";
 import { Badge, ProgressBar, PlatformBadge } from "@/components/ui";
+import { ShareActionButton } from "@/components/ShareActionButton";
 import { tierProgress } from "@/lib/domain/reward";
 import { formatDateTime, yuan } from "@/lib/utils";
 
@@ -162,7 +163,7 @@ export default async function MyContributionPage({
                 )}
 
                 {s.contents.length > 0 && (
-                  <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-ink-100 pt-2.5">
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-ink-100 pt-2.5">
                     {s.contents.map((c) => (
                       <Link
                         key={c.id}
@@ -173,11 +174,18 @@ export default async function MyContributionPage({
                         {c.adopted && <span className="text-emerald-600">已采用</span>}
                       </Link>
                     ))}
+                    {/* 复制分享文案会记一次 share 事件 —— 工作台的「分享次数」由此变真 */}
+                    <ShareActionButton
+                      shareToken={s.contents[0].shareToken}
+                      title={s.contents[0].title}
+                      body={s.contents[0].body}
+                    />
                   </div>
                 )}
                 {s.contents.length > 0 && (
                   <p className="hint mt-2">
-                    点开任意一条分享出去，别人点进来看就能给你加贡献值（+5/次，封顶 50）。
+                    点开任意一条预览、或直接复制分享文案发出去。别人点进来看就能给你加贡献值
+                    （同一访客只计一次，+5/次，封顶 50）。
                   </p>
                 )}
               </div>

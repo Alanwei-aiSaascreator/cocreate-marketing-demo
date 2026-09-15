@@ -85,8 +85,6 @@ model Contributor {
   phone       String?
   /// qr / link / seed
   sourceChannel String @default("link")
-  /// 累计贡献值（冗余缓存，方便榜单直读）
-  totalPoints Int @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -62,10 +62,9 @@ export async function settleContributor(
   const campaignPoints = campaignAgg._sum.points ?? 0;
   const totalPoints = globalAgg._sum.points ?? 0;
 
-  await prisma.contributor.update({
-    where: { id: contributorId },
-    data: { totalPoints },
-  });
+  // 注意：不再往 Contributor 上写一个冗余的 totalPoints 列。
+  // 那一列只写不读（榜单和 H5 都用 aggregate 重算），每次结算多一次无用 UPDATE，
+  // 而且一旦哪条路径漏了更新就会与真实数据静默不一致。冗余缓存没有读取方就是纯负债。
 
   const tiers = parseJson<RewardTier[]>(campaign?.rewardTiers, []);
   const toGrant = tiersToGrant(

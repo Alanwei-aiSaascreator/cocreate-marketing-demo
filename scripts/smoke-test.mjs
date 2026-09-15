@@ -22,6 +22,48 @@ const BASE = (process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, "
 const envText = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
 const hasKey = /LLM_API_KEY\s*=\s*["']?[^"'\s]+/.test(envText);
 
+const merchantPassword =
+  envText.match(/MERCHANT_PASSWORD\s*=\s*["']?([^"'\s]*)/)?.[1] ?? "";
+
+/**
+ * 商家侧的请求头。
+ *
+ * 部署设了 MERCHANT_PASSWORD 时，所有 /api/merchant/* 都会 401。
+ * 测试自己先登录一次拿 cookie，否则「设了口令的部署跑测试」会看到一片虚假失败 ——
+ * 那会让人误以为功能坏了，实际只是测试没带凭据。
+ */
+let merchantHeaders = {};
+
+async function loginAsMerchant() {
+  if (!merchantPassword) {
+    console.log("  \x1b[90m（未设置 MERCHANT_PASSWORD，商家接口按演示模式开放）\x1b[0m");
+    return;
+  }
+
+  const res = await fetch(`${BASE}/api/merchant/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: merchantPassword }),
+  });
+
+  // 这里绝不能静默 return：登录失败会让后面所有商家侧断言以「401」的假象失败，
+  // 让人误以为功能坏了，而真正的问题只是测试没拿到凭据。
+  if (!res.ok) {
+    console.log(`  \x1b[31m✗ 商家登录失败（HTTP ${res.status}）：检查 .env 里的 MERCHANT_PASSWORD\x1b[0m`);
+    process.exit(1);
+  }
+
+  const setCookie = res.headers.getSetCookie?.() ?? [];
+  const token = setCookie.map((c) => c.split(";")[0]).find((c) => c.startsWith("cc_merchant="));
+  if (!token) {
+    console.log("  \x1b[31m✗ 商家登录成功但没拿到 cc_merchant cookie\x1b[0m");
+    process.exit(1);
+  }
+
+  merchantHeaders = { cookie: token };
+  console.log("  \x1b[90m（已用 MERCHANT_PASSWORD 登录，后续商家侧请求带凭据）\x1b[0m");
+}
+
 let passed = 0;
 let failed = 0;
 
@@ -61,6 +103,7 @@ function captureCookie(res) {
 }
 
 async function main() {
+  await loginAsMerchant();
   console.log(`\n\x1b[1m共创营销 Demo · 端到端冒烟测试\x1b[0m  →  ${BASE}`);
 
   // ── 1. 页面可访问 ──────────────────────────────────────
@@ -84,7 +127,7 @@ async function main() {
   try {
     const res = await fetch(`${BASE}/api/merchant/campaigns`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...merchantHeaders },
       body: JSON.stringify({
         merchant: {
           name: SMOKE_MERCHANT,
@@ -274,7 +317,7 @@ async function main() {
   try {
     const res = await fetch(`${BASE}/api/merchant/submissions/${submission.submissionId}/adopt`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...merchantHeaders },
       body: JSON.stringify({ adopted: true }),
     });
     const data = await res.json();
@@ -284,7 +327,7 @@ async function main() {
     // 幂等：再点一次不应该重复加分
     const again = await fetch(`${BASE}/api/merchant/submissions/${submission.submissionId}/adopt`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...merchantHeaders },
       body: JSON.stringify({ adopted: true }),
     });
     const againData = await again.json();
@@ -306,7 +349,7 @@ async function main() {
     check(me.ok, "我的贡献页可访问", `HTTP ${me.status}`);
 
     // 从商家工作台找一张待核销的券
-    const ws = await fetch(`${BASE}/merchant/campaigns/${campaign.campaignId}?tab=rewards`);
+    const ws = await fetch(`${BASE}/merchant/campaigns/${campaign.campaignId}?tab=rewards`, { headers: merchantHeaders });
     check(ws.ok, "奖励账本页可访问", `HTTP ${ws.status}`);
   } catch (err) {
     fail("核销页", err.message);
@@ -341,7 +384,7 @@ async function main() {
   // 否则线上模型静默退化成模板，没人会知道。
   section("9. AI 质量可观测性");
   try {
-    const res = await fetch(`${BASE}/merchant/campaigns/${campaign.campaignId}`);
+    const res = await fetch(`${BASE}/merchant/campaigns/${campaign.campaignId}`, { headers: merchantHeaders });
     const html = await res.text();
     check(res.ok, "工作台可访问", `HTTP ${res.status}`);
     check(html.includes("AI 生成质量"), "概览页展示 AI 生成质量面板");

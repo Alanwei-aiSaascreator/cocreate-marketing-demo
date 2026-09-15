@@ -18,16 +18,11 @@ import { detectRisks } from "../lib/domain/risk";
 import { scoreSubmission, adoptPointItem, clickPointItem, CLICK_POINT, CLICK_CAP } from "../lib/domain/scoring";
 import { tiersToGrant } from "../lib/domain/reward";
 import { shareToken, viewerToken } from "../lib/ids";
+import { DEMO_PUBLIC_TOKEN } from "../lib/demo";
 import type { Platform, PlatformFrame, RewardTier, TaskField } from "../lib/types";
 
 const prisma = new PrismaClient();
 const UPLOAD_DIR = join(process.cwd(), "public", "uploads");
-
-/**
- * 演示活动的固定入口短码。
- * 固定而非随机，这样反复重跑种子数据也不会让已经发出去的演示链接失效。
- */
-export const DEMO_PUBLIC_TOKEN = "demo-cocreate";
 
 // ── 占位实拍图 ────────────────────────────────────────────
 // Demo 用程序生成的 SVG 占位图，避免把别人的照片放进仓库。
@@ -330,7 +325,8 @@ async function main() {
 
     const score = scoreSubmission({
       answers: seed.answers,
-      imageUrl: image?.url ?? null,
+      // 计分只需要知道"有没有图"，传布尔而不是 URL
+      hasImage: !!image?.url,
       riskFlags,
       priorSubmissions: priorCount,
       requiredTextFields,
@@ -481,8 +477,6 @@ async function main() {
       _sum: { points: true },
     });
     const total = agg._sum.points ?? 0;
-
-    await prisma.contributor.update({ where: { id: contributor.id }, data: { totalPoints: total } });
 
     const granted = await prisma.reward.findMany({
       where: { contributorId: contributor.id, campaignId: campaign.id },

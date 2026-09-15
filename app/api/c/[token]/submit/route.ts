@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "@/lib/db";
@@ -11,17 +11,12 @@ import { scoreSubmission } from "@/lib/domain/scoring";
 import { settleContributor } from "@/lib/domain/settle";
 import { getOrCreateContributor } from "@/lib/queries";
 import { readViewerToken } from "@/lib/viewer";
+import { detectImageFormat, describeUnsupportedFormat } from "@/lib/image-server";
 import type { Platform, PlatformFrame, TaskField } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const ALLOWED_MIME: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "image/gif": "gif",
-};
 
 /**
  * 老客提交共创素材。
@@ -85,44 +80,60 @@ export async function POST(
   }
 
   // 2. 图片：可选但影响分数，类型和大小严格校验
-  let imageUrl: string | null = null;
-  let imageHash: string | null = null;
-  const imageField = taskCard.find((f) => f.type === "image");
+  // 3. 图片：读进内存 + 用魔数校验真实格式，**但先不落盘**。
+  //
+  // 两个刻意的顺序决定（原来都做错了）：
+  // a) 落盘必须等到「确认要入库」那一刻。原来先落盘再校验必填，
+  //    老客漏填一个字段就会在 public/uploads/ 留下没有任何记录引用的孤儿图，且没有回收路径。
+  // b) 格式以文件头为准，不信任客户端声明的 Content-Type（它由请求方随便填，
+  //    把任意二进制标成 image/png 就能穿过白名单）。
+  //    顺带给出 HEIC 的明确提示 —— 那正是手机拍照最常见的失败原因。
   const rawImage = form.get("image");
+  const imageField = taskCard.find((f) => f.type === "image");
+  let imageBytes: Buffer | null = null;
+  let imageExt: string | null = null;
+  let imageHash: string | null = null;
+  let imageUrl: string | null = null;
 
   if (rawImage && typeof rawImage === "object" && "arrayBuffer" in rawImage) {
     const file = rawImage as File;
     if (file.size > 0) {
       if (file.size > MAX_IMAGE_BYTES) {
-        return NextResponse.json({ error: "图片太大了，请压缩到 8MB 以内" }, { status: 400 });
-      }
-      const ext = ALLOWED_MIME[file.type];
-      if (!ext) {
+        const mb = (file.size / 1024 / 1024).toFixed(1);
         return NextResponse.json(
-          { error: "只支持 JPG / PNG / WebP / GIF 格式的图片" },
+          { error: `图片有 ${mb}MB，超过了 ${MAX_IMAGE_BYTES / 1024 / 1024}MB 上限。请换一张，或先用手机截屏再上传。` },
           { status: 400 },
         );
       }
 
       const bytes = Buffer.from(await file.arrayBuffer());
-      imageHash = createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+      const format = detectImageFormat(bytes);
+      if (!format) {
+        const kind = describeUnsupportedFormat(bytes);
+        return NextResponse.json(
+          {
+            error: kind
+              ? `这张图是 ${kind} 格式，浏览器没能转成通用格式。请在手机相册里先截图，再上传截图。`
+              : "没能识别这张图的格式。请换一张图片试试。",
+          },
+          { status: 400 },
+        );
+      }
 
-      const dir = join(process.cwd(), "public", "uploads");
-      await mkdir(dir, { recursive: true });
-      const filename = `${randomUUID()}.${ext}`;
-      await writeFile(join(dir, filename), bytes);
-      imageUrl = `/uploads/${filename}`;
+      imageBytes = bytes;
+      imageExt = format.ext;
+      imageHash = createHash("sha256").update(bytes).digest("hex").slice(0, 32);
     }
   }
 
-  // 3. 必填校验（图片是必填项时单独给一句人话提示）
+  // 4. 必填校验（图片是必填项时单独给一句人话提示）
   const missing = taskCard
     .filter((f) => f.required && f.type !== "image" && !answers[f.id])
     .map((f) => f.label);
   if (missing.length > 0) {
     return NextResponse.json({ error: `还差：${missing.join("、")}` }, { status: 400 });
   }
-  if (imageField?.required && !imageUrl) {
+  if (imageField?.required && !imageBytes) {
     return NextResponse.json({ error: "传一张实拍图就能提交了，随手拍就行" }, { status: 400 });
   }
 
@@ -172,7 +183,8 @@ export async function POST(
 
   const score = scoreSubmission({
     answers,
-    imageUrl,
+    // 此刻文件还没落盘（见上面第 3 步），只传"有没有图"
+    hasImage: !!imageBytes,
     riskFlags,
     priorSubmissions: priorCount,
     requiredTextFields,
@@ -181,21 +193,39 @@ export async function POST(
 
   const blocked = riskFlags.some((f) => f.level === "block");
 
-  // 6. 落库
-  const submission = await prisma.submission.create({
-    data: {
-      campaignId: campaign.id,
-      contributorId: contributor.id,
-      answers: JSON.stringify(answers),
-      imageUrl,
-      imageHash,
-      status: blocked ? "rejected" : "processed",
-      riskFlags: JSON.stringify(riskFlags),
-      points: score.points,
-    },
-  });
+  // 7. 到这一步才真正把图片落盘 —— 前面的格式校验、必填校验、风控都可能提前 return，
+  //    提前落盘就会在这些路径上留下没有任何记录引用的孤儿文件。
+  let writtenImagePath: string | null = null;
+  if (imageBytes && imageExt && !blocked) {
+    const dir = join(process.cwd(), "public", "uploads");
+    await mkdir(dir, { recursive: true });
+    const filename = `${randomUUID()}.${imageExt}`;
+    writtenImagePath = join(dir, filename);
+    await writeFile(writtenImagePath, imageBytes);
+    imageUrl = `/uploads/${filename}`;
+  }
 
-  // 7. 被风控拦下的素材不进内容库，也不产生贡献值
+  // 8. 落库。写盘之后若发生任何异常，把刚写的文件删掉，不留孤儿。
+  let submission;
+  try {
+    submission = await prisma.submission.create({
+      data: {
+        campaignId: campaign.id,
+        contributorId: contributor.id,
+        answers: JSON.stringify(answers),
+        imageUrl,
+        imageHash,
+        status: blocked ? "rejected" : "processed",
+        riskFlags: JSON.stringify(riskFlags),
+        points: score.points,
+      },
+    });
+  } catch (err) {
+    if (writtenImagePath) await unlink(writtenImagePath).catch(() => undefined);
+    throw err;
+  }
+
+  // 9. 被风控拦下的素材不进内容库，也不产生贡献值
   if (blocked) {
     return NextResponse.json({
       ok: false,
@@ -210,7 +240,7 @@ export async function POST(
     });
   }
 
-  // 8. AI 多平台加工（失败自动降级到规则引擎，不影响老客拿福利）
+  // 10. AI 多平台加工（失败自动降级到规则引擎，不影响老客拿福利）
   const merchantLike = {
     name: campaign.merchant.name,
     category: campaign.merchant.category,

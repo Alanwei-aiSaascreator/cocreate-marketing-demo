@@ -9,7 +9,14 @@ import type { PointItem, RiskFlag } from "../types";
 
 export interface ScoreInput {
   answers: Record<string, string>;
-  imageUrl?: string | null;
+  /**
+   * 是否提供了实拍图。
+   *
+   * 刻意用布尔而不是 imageUrl：调用方在计分这一刻**还没把文件落盘**
+   * （落盘要等到确认要入库那一刻，否则校验失败会留下孤儿文件），
+   * 传一个虚假的 URL 会误导读者。计分只需要知道"有没有图"。
+   */
+  hasImage: boolean;
   riskFlags: RiskFlag[];
   /** 该老客在本次活动里已成功提交的次数，用于首次参与奖励 */
   priorSubmissions: number;
@@ -60,7 +67,7 @@ export function scoreSubmission(input: ScoreInput): ScoreResult {
 
   const filledText = requiredTextFields.filter((f) => (answers[f.id] || "").trim().length > 0);
   const missingText = requiredTextFields.filter((f) => !(answers[f.id] || "").trim());
-  const missingImage = imageRequired && !input.imageUrl;
+  const missingImage = imageRequired && !input.hasImage;
   const overLimit = input.priorSubmissions >= FREE_SUBMISSIONS;
 
   breakdown.push(
@@ -77,7 +84,7 @@ export function scoreSubmission(input: ScoreInput): ScoreResult {
         },
   );
 
-  if (input.imageUrl) {
+  if (input.hasImage) {
     breakdown.push({
       label: "提供实拍图",
       points: IMAGE,

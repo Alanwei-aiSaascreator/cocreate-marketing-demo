@@ -16,6 +16,7 @@ import { PrismaClient } from "@prisma/client";
 import { ruleCompose } from "../lib/ai/rules";
 import { composeContents } from "../lib/ai";
 import { parseJson } from "../lib/json";
+import { DEMO_PUBLIC_TOKEN } from "../lib/demo";
 import { PLATFORM_META, type Platform, type PlatformFrame } from "../lib/types";
 
 const prisma = new PrismaClient();
@@ -28,7 +29,7 @@ function sep(title: string) {
 
 async function main() {
   const campaign = await prisma.campaign.findFirst({
-    where: { publicToken: "demo-cocreate" },
+    where: { publicToken: DEMO_PUBLIC_TOKEN },
     include: { merchant: true },
   });
   if (!campaign) throw new Error("找不到演示活动，请先跑 pnpm db:seed");

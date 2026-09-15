@@ -545,7 +545,7 @@ export interface ContributorDashboard {  contributor: {
     points: number;
     riskFlags: RiskFlag[];
     createdAt: Date;
-    contents: { id: string; platform: Platform; title: string; adopted: boolean; shareToken: string }[];
+    contents: { id: string; platform: Platform; title: string; body: string; adopted: boolean; shareToken: string }[];
   }[];
   contributions: { id: string; points: number; reason: string; breakdown: PointItem[]; createdAt: Date }[];
   rewards: { id: string; tierName: string; title: string; type: string; value: number; code: string; status: string }[];
@@ -602,6 +602,7 @@ export async function getContributorDashboard(
         id: c.id,
         platform: c.platform as Platform,
         title: c.title,
+        body: c.body,
         adopted: c.adopted,
         shareToken: c.shareToken,
       })),
