@@ -283,9 +283,10 @@ pnpm dev           # 开发服务器
 pnpm build         # 生产构建（输出到 .next-build，不会覆盖 dev 的 .next）
 pnpm start         # 跑生产构建（与 build 用同一目录）
 pnpm db:push       # 同步 schema 到 SQLite
-pnpm db:seed       # 载入演示数据（离线可复现）
+pnpm db:seed       # 载入演示数据（离线、可复现、零成本，用规则引擎生成内容）
 pnpm db:reset      # 重置数据库 + 重新载入
 pnpm setup         # generate + push + seed 一条龙
+pnpm demo:ai       # 用真实大模型重跑种子内容（演示前跑一次，见下）
 pnpm demo:mine     # 重建「你自己的演示活动」（走真实大模型，可反复执行）
 pnpm verify:promises          # 验证「注释承诺 == 代码行为」（12 项，不需要 dev server）
 node scripts/smoke-test.mjs   # 端到端冒烟测试（39 项，需先 pnpm dev）
@@ -294,6 +295,35 @@ npx tsx scripts/compare-engines.ts   # 同一份老客素材，规则引擎 vs �
 
 > ⚠️ **`pnpm db:seed` / `db:reset` 会清空所有表** —— 包括你手工建的活动和 H5 提交记录。
 > 这是种子数据的正常行为。演示前重置数据后用 `pnpm demo:mine` 把"你自己的活动"建回来。
+
+### 为什么要 `db:seed` + `demo:ai` 两步
+
+这两个命令服务的是**两个不同的目的**，刻意分开：
+
+| | `pnpm db:seed` | `pnpm demo:ai` |
+| --- | --- | --- |
+| 用途 | 开发、测试、CI | **演示** |
+| AI 层 | 内置规则引擎（模板拼装） | **真实大模型** |
+| 耗时 | 几秒 | 约 1–2 分钟 |
+| 成本 | 零 | 约 65 次模型调用 |
+| 联网 | 不需要 | 需要 |
+
+种子用规则引擎是为了**离线可复现**（没有 key 也能完整跑通，这正是 AI 层降级设计的价值）。
+但代价是后台的「AI 生成质量」面板会显示「大模型 0% / 规则引擎 100%」——
+而那恰恰是演示时最该展示的地方。所以演示前额外跑一次：
+
+```bash
+pnpm db:seed && pnpm demo:ai
+```
+
+`demo:ai` 会做两件事，都是**原地更新**（不删数据，保住 `contentId`，从而保住点击回流的归因）：
+
+1. 用大模型重写每条素材的四平台内容 → 面板变成「健康 · 零降级」
+2. 用大模型重建 10 个活动的框架，并**按新阶梯重新结算福利**
+   （档位名变了，账本必须跟着重算，否则老客会凭空多拿一份）
+
+它**可反复执行**：已经是大模型产出的素材会自动跳过，中断后重跑只补没跑完的。
+想跳过框架重建用 `--no-blueprints`；想省额度用 `--limit 20`。
 
 > `compare-engines.ts` 是理解本项目 AI 层最直观的方式：两个引擎吃同一份输入、
 > 吐同一个结构，差别只在内容质量。强制走大模型（`LLM_MODE=llm`），

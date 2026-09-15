@@ -10,6 +10,7 @@
     "lint": "eslint",
     "verify:promises": "tsx scripts/verify-promises.mts",
     "demo:mine": "tsx scripts/make-my-campaign.mts",
+    "demo:ai": "tsx scripts/generate-with-ai.mts",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && tsx prisma/seed.ts",
