@@ -5,39 +5,70 @@ import { cn } from "@/lib/utils";
 /**
  * AI 生成质量面板。
  *
- * 为什么不只做「llm vs rule 比例」：rule 有三种来源，
- * 只有「本该走模型却失败」才是故障。混在一起统计，演示数据会显示 100% 规则引擎、
- * 看着像全线故障 —— 那样这个指标反而在骗人。
- * 所以这里把三者分开，真正要盯的是 **降级数**。
+ * ── 设计反思（第一版做错了）──
+ * 第一版把「大模型 : 规则引擎」的比例条放在最显眼的位置，做成一根彩色长条，
+ * 结果使用者看到「11% 大模型 / 89% 规则引擎」就以为不健康 —— 而这两个数字
+ * 跟健康**毫无关系**。真正代表健康的是「降级」数（本该走模型却失败了）。
+ *
+ * 教训：**一个面板只能有一个主指标，而且必须是「需要采取行动」的那个。**
+ * 把最显眼的位置给了不需要行动的数字，使用者就一定会误读它。
+ * 所以这一版把层级颠倒过来：
+ *   主区 = 健康判定（降级数），大到一眼看到；
+ *   次区 = 内容构成，并且**主动写明「这不是健康指标」** ——
+ *          因为人会本能地去读最显眼的图形，必须把话说明白。
  */
 export function AiQualityCard({ quality }: { quality: AiQuality }) {
-  const { total, llm, ruleByDesign, degraded, llmRate, degradedRate, llmConfigured, model } = quality;
+  const { total, llm, ruleByDesign, degraded, degradedRate, llmConfigured, model } = quality;
 
-  const llmPct = Math.round(llmRate * 100);
+  const llmPct = total > 0 ? Math.round((llm / total) * 100) : 0;
+  const designPct = total > 0 ? Math.round((ruleByDesign / total) * 100) : 0;
   const degradedPct = Math.round(degradedRate * 100);
-  const designPct = total > 0 ? 100 - llmPct - degradedPct : 0;
 
-  // 健康判定必须如实反映「模型到底有没有被行使过」。
-  // 否则种子数据下会出现「大模型 0 条」却显示「模型调用全部正常」的误导性结论。
+  // 健康判定：只有「已配置 key 却失败」才是故障
   const health = !llmConfigured
-    ? { tone: "info" as const, text: `未配置模型 key，全部按设计走规则引擎（${model}）` }
+    ? {
+        tone: "info" as const,
+        headline: "未配置模型",
+        detail: "没配 LLM_API_KEY，全部按设计走规则引擎 —— 这是正常状态，不是故障。",
+      }
     : degraded > 0
       ? {
           tone: "bad" as const,
-          text: `有 ${degraded} 条内容本该走大模型但失败了，已退回模板 —— 检查 key 额度、网络或模型返回格式`,
+          headline: `不健康 · 降级 ${degraded} 条`,
+          detail: `有 ${degraded} 条内容本该走大模型但失败了，已退回模板。检查 key 额度、网络，或模型返回格式。`,
         }
-      : llm === 0
-        ? {
-            tone: "info" as const,
-            text: `模型已配置（${model}）且未发生降级；本次活动的内容均按设计用规则引擎产出（种子数据预生成），等有新素材提交就会走模型`,
-          }
-        : { tone: "good" as const, text: `模型调用全部正常，零降级（${llm}/${total} 条内容由 ${model} 生成）` };
+      : {
+          tone: "good" as const,
+          headline: "健康 · 零降级",
+          detail:
+            llm > 0
+              ? `模型调用全部正常：本期 ${llm}/${total} 条内容由 ${model} 生成，无一条因失败退回模板。`
+              : `模型已配置（${model}）且零降级；本期内容均按设计用规则引擎产出（种子数据预生成），等有新素材提交就会走模型。`,
+        };
 
-  const HEALTH_STYLE = {
-    good: "border-emerald-200 bg-emerald-50 text-emerald-800",
-    bad: "border-red-200 bg-red-50 text-red-800",
-    info: "border-ink-200 bg-ink-50 text-ink-600",
-  } as const;
+  const TONE = {
+    good: {
+      box: "border-emerald-200 bg-emerald-50",
+      head: "text-emerald-900",
+      body: "text-emerald-800",
+      icon: "text-emerald-600",
+      Icon: CheckCircle2,
+    },
+    bad: {
+      box: "border-red-200 bg-red-50",
+      head: "text-red-900",
+      body: "text-red-800",
+      icon: "text-red-600",
+      Icon: AlertTriangle,
+    },
+    info: {
+      box: "border-ink-200 bg-ink-50",
+      head: "text-ink-800",
+      body: "text-ink-600",
+      icon: "text-ink-500",
+      Icon: Info,
+    },
+  }[health.tone];
 
   return (
     <div className="card p-5">
@@ -46,102 +77,95 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
           <Activity className="h-4 w-4 text-brand-500" />
           AI 生成质量
         </h2>
-        <span className="text-xs text-ink-400">
-          内容产出共 {total} 条
-        </span>
+        <span className="text-xs text-ink-400">内容产出共 {total} 条</span>
       </div>
 
-      <p className="hint mt-1">
-        单条标注只能事后追查，比例才能一眼判断模型现在健不健康。
-      </p>
-
-      {/* 比例条 */}
-      <div className="mt-4 flex h-3 w-full overflow-hidden rounded-full bg-ink-100">
-        {llm > 0 && (
-          <div
-            className="h-full bg-emerald-500"
-            style={{ width: `${llmPct}%` }}
-            title={`大模型 ${llm} 条`}
-          />
-        )}
-        {degraded > 0 && (
-          <div
-            className="h-full bg-red-500"
-            style={{ width: `${degradedPct}%` }}
-            title={`降级 ${degraded} 条`}
-          />
-        )}
-        {ruleByDesign > 0 && (
-          <div
-            className="h-full bg-ink-300"
-            style={{ width: `${designPct}%` }}
-            title={`规则引擎（按设计）${ruleByDesign} 条`}
-          />
-        )}
-      </div>
-
-      {/* 三个数字 */}
-      <div className="mt-3 grid grid-cols-3 gap-3">
-        <div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="text-xs text-ink-500">大模型</span>
-          </div>
-          <div className="mt-1 text-lg font-semibold tabular-nums text-ink-900">
-            {llm}
-            <span className="ml-1 text-xs font-normal text-ink-400">{llmPct}%</span>
+      {/* ── 主区：健康判定。唯一需要采取行动的指标，占最大视觉权重 ── */}
+      <div className={cn("mt-4 rounded-xl border p-4", TONE.box)}>
+        <div className="flex items-start gap-3">
+          <TONE.Icon className={cn("mt-0.5 h-5 w-5 shrink-0", TONE.icon)} />
+          <div className="min-w-0">
+            <div className={cn("text-base font-bold", TONE.head)}>{health.headline}</div>
+            <p className={cn("mt-1 text-[13px] leading-relaxed", TONE.body)}>{health.detail}</p>
+            <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+              判断依据：降级 = 「已配置 key，但模型调用失败 / 返回不合法」。
+              没配 key、或种子数据用规则引擎，都<strong>不算</strong>降级。
+            </p>
           </div>
         </div>
+      </div>
 
-        <div>
-          <div className="flex items-center gap-1.5">
+      {/* ── 次区：内容构成。刻意降权，并主动声明它不是健康指标 ── */}
+      <div className="mt-4 border-t border-ink-100 pt-4">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-xs font-medium text-ink-600">内容构成</span>
+          <span className="text-[11px] text-ink-400">
+            这不是健康指标 —— 规则引擎占比高，通常只是还没人提交新素材
+          </span>
+        </div>
+
+        {/* 进度条去饱和：灰色不该被读成「坏」 */}
+        <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-ink-100">
+          {llm > 0 && (
+            <div
+              className="h-full bg-sky-400"
+              style={{ width: `${llmPct}%` }}
+              title={`大模型 ${llm} 条`}
+            />
+          )}
+          {degraded > 0 && (
+            <div
+              className="h-full bg-red-500"
+              style={{ width: `${degradedPct}%` }}
+              title={`降级 ${degraded} 条`}
+            />
+          )}
+          {ruleByDesign > 0 && (
+            <div
+              className="h-full bg-ink-200"
+              style={{ width: `${designPct}%` }}
+              title={`规则引擎（按设计）${ruleByDesign} 条`}
+            />
+          )}
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-sky-400" />
+            <span className="text-ink-500">大模型</span>
+            <span className="font-semibold tabular-nums text-ink-900">{llm}</span>
+            <span className="text-ink-400">{llmPct}%</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className={cn("h-2 w-2 rounded-full", degraded > 0 ? "bg-red-500" : "bg-ink-200")} />
+            <span className="text-ink-500">降级</span>
             <span
               className={cn(
-                "h-2 w-2 rounded-full",
-                degraded > 0 ? "bg-red-500" : "bg-ink-300",
+                "font-semibold tabular-nums",
+                degraded > 0 ? "text-red-600" : "text-ink-900",
               )}
-            />
-            <span className="text-xs text-ink-500">降级</span>
-          </div>
-          <div
-            className={cn(
-              "mt-1 text-lg font-semibold tabular-nums",
-              degraded > 0 ? "text-red-600" : "text-ink-900",
-            )}
-          >
-            {degraded}
-            <span className="ml-1 text-xs font-normal text-ink-400">{degradedPct}%</span>
-          </div>
-        </div>
-
-        <div>
-          <div className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full bg-ink-300" />
-            <span className="text-xs text-ink-500">规则引擎（按设计）</span>
-          </div>
-          <div className="mt-1 text-lg font-semibold tabular-nums text-ink-900">
-            {ruleByDesign}
-            <span className="ml-1 text-xs font-normal text-ink-400">{designPct}%</span>
-          </div>
+            >
+              {degraded}
+            </span>
+            <span className="text-ink-400">{degradedPct}%</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-ink-200" />
+            <span className="text-ink-500">规则引擎（按设计）</span>
+            <span className="font-semibold tabular-nums text-ink-900">{ruleByDesign}</span>
+            <span className="text-ink-400">{designPct}%</span>
+          </span>
         </div>
       </div>
 
-      {/* 健康判定 */}
-      <div className={cn("mt-4 flex items-start gap-2 rounded-lg border p-3", HEALTH_STYLE[health.tone])}>
-        {health.tone === "good" && <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-        {health.tone === "bad" && <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-        {health.tone === "info" && <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-        <span className="text-[12px] leading-relaxed">{health.text}</span>
-      </div>
-
-      {/* 降级原因分布 */}
+      {/* ── 降级原因：只在真的降级时才出现 ── */}
       {quality.reasons.length > 0 && (
-        <div className="mt-3 border-t border-ink-100 pt-3">
-          <div className="text-xs font-medium text-ink-600">降级原因</div>
+        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3">
+          <div className="text-xs font-medium text-red-800">降级原因</div>
           <div className="mt-2 space-y-1.5">
             {quality.reasons.map((r) => (
-              <div key={r.note} className="flex items-start gap-2 text-[12px] text-ink-600">
-                <span className="shrink-0 rounded bg-red-50 px-1.5 py-0.5 font-medium tabular-nums text-red-700">
+              <div key={r.note} className="flex items-start gap-2 text-[12px] text-red-700">
+                <span className="shrink-0 rounded bg-white px-1.5 py-0.5 font-medium tabular-nums">
                   {r.count} 条
                 </span>
                 <span className="min-w-0 break-words">{r.note}</span>
@@ -151,9 +175,11 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
         </div>
       )}
 
-      {/* 活动框架的生成情况 */}
-      <div className="mt-3 border-t border-ink-100 pt-3">
-        <div className="text-xs font-medium text-ink-600">活动框架（平台框架 / 任务卡 / 奖励阶梯）</div>
+      {/* ── 活动框架的生成情况 ── */}
+      <div className="mt-4 border-t border-ink-100 pt-3">
+        <div className="text-xs font-medium text-ink-600">
+          活动框架（平台框架 / 任务卡 / 奖励阶梯）
+        </div>
         <div className="mt-1.5 flex items-start gap-2">
           <span
             className={cn(
@@ -171,9 +197,7 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
                 ? "降级"
                 : "规则引擎"}
           </span>
-          <span className="text-[12px] leading-relaxed text-ink-500">
-            {quality.blueprint.note}
-          </span>
+          <span className="text-[12px] leading-relaxed text-ink-500">{quality.blueprint.note}</span>
         </div>
       </div>
     </div>

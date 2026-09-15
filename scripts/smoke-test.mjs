@@ -9,8 +9,13 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import "dotenv/config";
+import { PrismaClient } from "@prisma/client";
 
 const envPath = join(process.cwd(), ".env");
+
+/** 测试店铺名。既用于建数据，也作为清理锚点，避免测试数据污染演示列表 */
+const SMOKE_MERCHANT = "冒烟测试小馆";
 const BASE = (process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
 
 // 读 .env 判断是否配置了模型 key —— 决定「必须走大模型」这条断言是否适用
@@ -82,7 +87,7 @@ async function main() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         merchant: {
-          name: "冒烟测试小馆",
+          name: SMOKE_MERCHANT,
           category: "火锅",
           city: "成都",
           address: "成都市测试路 1 号",
@@ -327,17 +332,42 @@ async function main() {
       html.includes("规则引擎（按设计）"),
       "面板区分「按设计」与「降级」两个概念",
     );
+    // 这条守的是一个真实的设计教训：第一版把「大模型 : 规则引擎」比例条做成
+    // 最显眼的元素，结果使用者看到「11% 大模型 / 89% 规则引擎」就以为不健康 ——
+    // 而这两个数字跟健康毫无关系。面板必须主动声明「构成 ≠ 健康」。
+    check(
+      html.includes("这不是健康指标"),
+      "面板主动声明内容构成不是健康指标（防止把比例误读成健康度）",
+    );
+    check(
+      html.includes("健康 · 零降级") || html.includes("不健康 · 降级"),
+      "面板给出明确的健康判定结论",
+    );
 
     if (hasKey) {
-      check(
-        html.includes("零降级"),
-        "配了 key 且无故障时，面板显示零降级",
-      );
+      check(html.includes("零降级"), "配了 key 且无故障时，面板显示零降级");
     } else {
       ok("未配置 key，跳过零降级断言");
     }
   } catch (err) {
     fail("AI 质量面板", err.message);
+  }
+
+  // ── 10. 清理测试数据 ───────────────────────────────────
+  // 冒烟测试每次都会建一个活动。不清理的话，反复跑几轮就把演示列表堆满了垃圾。
+  // 用固定的测试店铺名做清理锚点（cascade 会连带删掉活动/素材/内容/奖励）。
+  // 设 KEEP_SMOKE_DATA=1 可以保留，方便事后翻看。
+  if (process.env.KEEP_SMOKE_DATA !== "1") {
+    section("10. 清理测试数据");
+    const prisma = new PrismaClient();
+    try {
+      const { count } = await prisma.merchant.deleteMany({ where: { name: SMOKE_MERCHANT } });
+      check(count > 0, `清理测试店铺「${SMOKE_MERCHANT}」`, `删除 ${count} 个`);
+    } catch (err) {
+      fail("清理测试数据", err.message);
+    } finally {
+      await prisma.$disconnect();
+    }
   }
 
   // ── 汇总 ───────────────────────────────────────────────
