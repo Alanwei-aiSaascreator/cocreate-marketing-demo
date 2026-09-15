@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { ShieldAlert, ShieldCheck } from "lucide-react";
+import { KeyRound, ShieldAlert, ShieldCheck } from "lucide-react";
 import { LogoutButton } from "@/components/LogoutButton";
 import { merchantAuthRequired } from "@/lib/merchant-auth";
 
@@ -33,6 +33,10 @@ export default function MerchantLayout({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             {gated && <LogoutButton />}
+            <Link href="/merchant/settings" className="btn btn-ghost">
+              <KeyRound className="h-3.5 w-3.5" />
+              AI 设置
+            </Link>
             <Link href="/merchant/campaigns/new" className="btn btn-primary">
               新建共创活动
             </Link>

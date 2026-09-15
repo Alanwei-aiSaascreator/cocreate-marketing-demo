@@ -492,7 +492,50 @@ async function main() {
     }
   }
 
-  // ── 11. 清理测试数据 ───────────────────────────────────
+  // ── 11. AI 设置页与密钥安全 ────────────────────────────
+  // 这一段是**只读**检查，刻意不碰保存接口 ——
+  // 保存一个假密钥如果中途被打断，会把用户配好的真 key 顶掉。
+  // 写入路径（保存/清除/优先级）由人工验证过，见 README。
+  section("11. AI 设置页与密钥安全");
+  try {
+    const api = await fetch(`${BASE}/api/merchant/settings/ai`);
+    const data = await api.json();
+    check(api.ok, "设置接口可访问", `HTTP ${api.status}`);
+    check(
+      typeof data.apiKeySource === "string" && typeof data.enabled === "boolean",
+      "返回密钥来源与是否启用",
+      `来源=${data.apiKeySource} 启用=${data.enabled}`,
+    );
+    check(
+      !("apiKey" in data) && typeof data.apiKeyMasked === "string",
+      "接口只返回掩码，不回显完整密钥",
+      `掩码=${data.apiKeyMasked || "(未配置)"}`,
+    );
+
+    const page = await fetch(`${BASE}/merchant/settings`);
+    const pageHtml = await page.text();
+    check(page.ok, "设置页可访问", `HTTP ${page.status}`);
+    check(pageHtml.includes("填入密钥"), "设置页服务端就渲染出表单（不是空壳）");
+
+    // 最关键的一条：真实密钥绝不能出现在任何页面的 HTML 里
+    const realKey = (envText.match(/LLM_API_KEY\s*=\s*["']?([^"'\s]+)/)?.[1] ?? "").trim();
+    if (realKey) {
+      const withSettings = pageHtml.includes(realKey);
+      const merchantPage = await (await fetch(`${BASE}/merchant`)).text();
+      const withMerchant = merchantPage.includes(realKey);
+      check(
+        !withSettings && !withMerchant,
+        "真实密钥不出现在任何页面 HTML 里",
+        withSettings || withMerchant ? "在设置页" : "设置页与后台都干净",
+      );
+    } else {
+      ok("未配置密钥，跳过泄露检查");
+    }
+  } catch (err) {
+    fail("AI 设置页", err.message);
+  }
+
+  // ── 12. 清理测试数据 ───────────────────────────────────
   // 冒烟测试每次都会建一个活动。不清理的话，反复跑几轮就把演示列表堆满了垃圾。
   // 用固定的测试店铺名做清理锚点（cascade 会连带删掉活动/素材/内容/奖励）。
   // 设 KEEP_SMOKE_DATA=1 可以保留，方便事后翻看。

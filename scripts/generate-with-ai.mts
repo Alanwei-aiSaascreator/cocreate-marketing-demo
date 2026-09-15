@@ -37,6 +37,7 @@ import { PrismaClient } from "@prisma/client";
 import { composeContents, generateBlueprint, llmConfig } from "../lib/ai";
 import { ruleCompose } from "../lib/ai/rules";
 import { parseJson } from "../lib/json";
+import { ensureSettingsLoaded } from "../lib/settings";
 import { tiersToGrant } from "../lib/domain/reward";
 import { shareToken as newShareToken } from "../lib/ids";
 import type { Platform, PlatformFrame, RewardTier, TaskField } from "../lib/types";
@@ -157,6 +158,8 @@ interface JobResult {
 // ── 主流程 ────────────────────────────────────────────────
 
 async function main() {
+  // 先加载界面设置 —— 这样用户在浏览器里填的 key 对命令行脚本同样生效
+  await ensureSettingsLoaded();
   const cfg = llmConfig();
   if (!cfg.enabled) {
     console.error(`

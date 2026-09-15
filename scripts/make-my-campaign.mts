@@ -21,6 +21,7 @@ import { generateBlueprint, llmConfig } from "../lib/ai";
 import { campaignToken } from "../lib/ids";
 import { DEMO_PUBLIC_TOKEN } from "../lib/demo";
 import { parseJson } from "../lib/json";
+import { ensureSettingsLoaded } from "../lib/settings";
 import type { Platform } from "../lib/types";
 
 const prisma = new PrismaClient();
@@ -33,6 +34,9 @@ const TITLE = titleArg || "老客共创 · 招牌口碑计划";
 if (useRule) process.env.LLM_MODE = "rule";
 
 async function main() {
+  // 界面上填过 key 的话，这里也要用上（优先级：界面设置 > .env）
+  await ensureSettingsLoaded();
+
   // 用种子数据里的商家。没有就先提示跑 db:seed。
   const merchant = await prisma.merchant.findFirst({ orderBy: { createdAt: "asc" } });
   if (!merchant) {

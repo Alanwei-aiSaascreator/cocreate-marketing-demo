@@ -6,6 +6,7 @@ import { prisma } from "./db";
 import { parseJson } from "./json";
 import { viewerToken as newViewerToken } from "./ids";
 import { llmConfig } from "./ai/deepseek";
+import { ensureSettingsLoaded } from "./settings";
 import type {
   ContentVariant,
   Platform,
@@ -461,6 +462,8 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
   // 三者各自独立计数，保证互不重叠、加起来不超过总数 ——
   // 早先用「总数 - 大模型 - 降级」反推，一旦出现 aiMode=llm 且 degraded=true 的行
   // （写库时整批覆盖就会造出这种行），就会算出负数并渲染出「-4」「-100%」。
+  // 先加载界面设置，面板上显示的模型名与"是否配置了 key"才准确
+  await ensureSettingsLoaded();
   const cfg = llmConfig();
   const llmCount = contents.filter((c) => c.aiMode === "llm").length;
   const degradedContents = contents.filter((c) => c.degraded);

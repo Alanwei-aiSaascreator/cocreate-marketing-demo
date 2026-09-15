@@ -4,6 +4,7 @@
  * 任何一步失败都返回 ok:false，由 lib/ai/index.ts 决定是否降级 —— 绝不抛异常打断业务。
  */
 import type { ZodType } from "zod";
+import { effectiveAiSettings } from "../settings";
 
 export type LlmConfig = {
   mode: "auto" | "llm" | "rule";
@@ -15,19 +16,21 @@ export type LlmConfig = {
 };
 
 export function llmConfig(): LlmConfig {
-  const rawMode = (process.env.LLM_MODE || "auto").trim().toLowerCase();
-  const mode: LlmConfig["mode"] = rawMode === "llm" || rawMode === "rule" ? rawMode : "auto";
-  const apiKey = (process.env.LLM_API_KEY || "").trim();
-  const baseUrl = (process.env.LLM_BASE_URL || "https://api.deepseek.com").trim().replace(/\/+$/, "");
-  const model = (process.env.LLM_MODEL || "deepseek-chat").trim();
+  // 读的是 lib/settings.ts 合并后的结果，优先级：界面设置 > .env。
+  // 这样用户在浏览器里填完 key 立刻生效、不用改文件重启；
+  // 而 CI / 部署环境仍然可以只用环境变量。
+  //
+  // 能同步取到值，是因为 AI 入口（generateBlueprint / composeContents）
+  // 已经先 await 过 ensureSettingsLoaded()。缓存没加载时它会退化成只读 .env。
+  const s = effectiveAiSettings();
 
   return {
-    mode,
-    apiKey,
-    baseUrl,
-    model,
+    mode: s.mode,
+    apiKey: s.apiKey,
+    baseUrl: s.baseUrl,
+    model: s.model,
     // mode=rule 时永不调用；没有 key 时永不调用。其余交给真实请求去试
-    enabled: mode !== "rule" && apiKey.length > 0,
+    enabled: s.enabled,
   };
 }
 

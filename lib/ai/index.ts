@@ -10,6 +10,7 @@
  */
 import { PLATFORM_META, type AiMode, type ComposedContent, type Platform, type PlatformFrame, type RewardTier, type TaskField } from "../types";
 import { llmConfig, llmJson } from "./deepseek";
+import { ensureSettingsLoaded } from "../settings";
 import { BLUEPRINT_SYSTEM, COMPOSE_SYSTEM, blueprintUserPrompt, composeUserPrompt, platformSpecText } from "./prompts";
 import { ruleBlueprint, ruleCompose, complianceCheck, SCENE_OPTIONS, type CampaignLike, type MerchantLike, type SubmissionLike } from "./rules";
 import { canonicalThresholds } from "../domain/scoring";
@@ -90,6 +91,8 @@ export async function generateBlueprint(
   merchant: MerchantLike,
   campaign: CampaignLike,
 ): Promise<BlueprintResult> {
+  // 先加载「界面设置」再读配置 —— 否则用户在浏览器里刚填的 key 不会被用上
+  await ensureSettingsLoaded();
   const cfg = llmConfig();
   const fallback = (degraded: boolean, note?: string): BlueprintResult => {
     const r = ruleBlueprint(merchant, campaign);
@@ -371,6 +374,8 @@ export async function composeContents(
       "未配置模型 key，按设计使用规则引擎基于老客素材拼装（非降级）。",
   });
 
+  // 同理：先加载界面设置，再判断该走模型还是规则引擎
+  await ensureSettingsLoaded();
   const cfg = llmConfig();
   if (!cfg.enabled) return byRule(false);
 

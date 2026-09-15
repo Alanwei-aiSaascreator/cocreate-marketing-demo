@@ -11,6 +11,21 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// 运行时设置（键值对）。
+///
+/// 存在的理由：让克隆仓库的人在**浏览器里**填 AI 密钥，而不是去改 .env 再重启。
+/// 优先级是「界面设置 > .env」——
+/// CI / 部署环境仍然可以只用环境变量，界面上填过的会覆盖它。
+///
+/// 安全说明：密钥以**明文**存在本地 SQLite 里。这对单机 Demo 可以接受，
+/// 生产环境应当走密钥管理服务（KMS / Vault）或至少做加密存储。
+/// 界面上会如实标注这一点，不假装它是安全的。
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
 /// 商家：AI 生成内容的「边界」由这里决定
 model Merchant {
   id       String  @id @default(cuid())
