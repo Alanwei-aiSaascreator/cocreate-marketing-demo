@@ -9,6 +9,7 @@ import {
 import { readViewerToken } from "@/lib/viewer";
 import { Badge, ProgressBar, PlatformBadge } from "@/components/ui";
 import { ShareActionButton } from "@/components/ShareActionButton";
+import { QrCard } from "@/components/QrCard";
 import { tierProgress } from "@/lib/domain/reward";
 import { CLICK_CAP } from "@/lib/domain/scoring";
 import { formatDateTime, yuan } from "@/lib/utils";
@@ -108,32 +109,43 @@ export default async function MyContributionPage({
         ) : (
           <div className="space-y-2">
             {dash.rewards.map((r) => (
-              <div
-                key={r.id}
-                className="flex items-center justify-between rounded-xl border border-ink-200 bg-white p-3.5"
-              >
-                <div>
-                  <div className="text-[13px] font-medium text-ink-900">{r.title}</div>
-                  <div className="hint mt-0.5">
-                    {r.tierName}
-                    {r.value > 0 ? ` · 价值 ¥${yuan(r.value)}` : ""}
+              <div key={r.id} className="rounded-xl border border-ink-200 bg-white p-3.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[13px] font-medium text-ink-900">{r.title}</div>
+                    <div className="hint mt-0.5">
+                      {r.tierName}
+                      {r.value > 0 ? ` · 价值 ¥${yuan(r.value)}` : ""}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-mono text-xs text-ink-700">{r.code}</div>
+                    <div className="mt-1">
+                      {r.status === "redeemed" ? (
+                        <Badge tone="gray">已核销</Badge>
+                      ) : r.status === "expired" ? (
+                        <Badge tone="red">已失效</Badge>
+                      ) : (
+                        <Badge tone="green">
+                          <Ticket className="h-3 w-3" />
+                          到店可用
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="font-mono text-xs text-ink-700">{r.code}</div>
-                  <div className="mt-1">
-                    {r.status === "redeemed" ? (
-                      <Badge tone="gray">已核销</Badge>
-                    ) : r.status === "expired" ? (
-                      <Badge tone="red">已失效</Badge>
-                    ) : (
-                      <Badge tone="green">
-                        <Ticket className="h-3 w-3" />
-                        到店可用
-                      </Badge>
-                    )}
-                  </div>
-                </div>
+
+                {/* 券码直接出成二维码：老客到店把手机递过去让店员扫，
+                    比「报一串码、店员手输」快得多，也不会输错。
+                    只在「可用」状态下出码 —— 已核销/已失效的券不该还能被扫。 */}
+                {r.status === "issued" && (
+                  <QrCard
+                    compact
+                    path={`/merchant/redeem/${r.code}`}
+                    title="到店出示给店员扫"
+                    desc="扫一下直达核销页，不用手输券码。"
+                  />
+                )}
               </div>
             ))}
           </div>

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -17,6 +18,10 @@ import type { Platform, PlatformFrame, TaskField } from "@/lib/types";
 export const runtime = "nodejs";
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function isUniqueViolation(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
 
 /**
  * 老客提交共创素材。
@@ -181,7 +186,9 @@ export async function POST(
     .map((f) => ({ id: f.id, label: f.label }));
   const imageRequired = !!taskCard.find((f) => f.type === "image")?.required;
 
-  const score = scoreSubmission({
+  // 入参单独存一份：并发抢「首次参与」失败时要拿**同一份输入**重算。
+  // 重新手拼一遍参数很容易漏项（比如忘掉 hasImage，就会把实拍图那 10 分算没）。
+  const scoreInput = {
     answers,
     // 此刻文件还没落盘（见上面第 3 步），只传"有没有图"
     hasImage: !!imageBytes,
@@ -189,7 +196,8 @@ export async function POST(
     priorSubmissions: priorCount,
     requiredTextFields,
     imageRequired,
-  });
+  };
+  const score = scoreSubmission(scoreInput);
 
   const blocked = riskFlags.some((f) => f.level === "block");
 
@@ -292,16 +300,45 @@ export async function POST(
   }
 
   // 9. 贡献值 + 结算发券
-  await prisma.contribution.create({
-    data: {
-      campaignId: campaign.id,
-      contributorId: contributor.id,
-      submissionId: submission.id,
-      breakdown: JSON.stringify(score.breakdown),
-      points: score.points,
-      reason: score.reason,
-    },
-  });
+  //
+  // 「首次参与 +10」是**每活动每老客一次**的一次性资源，所以由数据库发名额，而不是应用层判断：
+  // 并发双击提交时两个请求都会数到「本活动还没提交过」，各自把这 10 分算进去。
+  // 上面那条 @@unique([submissionId, reason]) 挡不住 —— 两次提交的 submissionId 本来就不同。
+  // 抢到名额的请求保留这 10 分；没抢到的（P2002）去掉它重算，并把落库的分值一并改对。
+  const firstClaimKey = priorCount === 0 ? `first:${campaign.id}:${contributor.id}` : null;
+  let finalScore = score;
+  try {
+    await prisma.contribution.create({
+      data: {
+        campaignId: campaign.id,
+        contributorId: contributor.id,
+        submissionId: submission.id,
+        breakdown: JSON.stringify(score.breakdown),
+        points: score.points,
+        reason: score.reason,
+        firstClaimKey,
+      },
+    });
+  } catch (err) {
+    // 只吞「首次名额被并发同伴抢走」这一种冲突；其它错误照抛，不掩盖真实故障。
+    if (!firstClaimKey || !isUniqueViolation(err)) throw err;
+    finalScore = scoreSubmission({ ...scoreInput, priorSubmissions: 1 });
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: { points: finalScore.points },
+    });
+    await prisma.contribution.create({
+      data: {
+        campaignId: campaign.id,
+        contributorId: contributor.id,
+        submissionId: submission.id,
+        breakdown: JSON.stringify(finalScore.breakdown),
+        points: finalScore.points,
+        reason: finalScore.reason,
+        firstClaimKey: null,
+      },
+    });
+  }
 
   await prisma.trackEvent.create({
     data: {
@@ -323,8 +360,10 @@ export async function POST(
     ok: true,
     blocked: false,
     submissionId: submission.id,
-    points: score.points,
-    breakdown: score.breakdown,
+    // 用 finalScore 而不是 score：并发下首次奖励可能已被同伴抢走，
+    // 返回给老客看的必须是他**实际拿到**的分值，而不是算之前以为的分值。
+    points: finalScore.points,
+    breakdown: finalScore.breakdown,
     riskFlags,
     aiMode: composed.aiMode,
     degraded: composed.degraded,

@@ -333,6 +333,9 @@ async function main() {
           breakdown: JSON.stringify(score.breakdown),
           points: score.points,
           reason: score.reason,
+          // 与线上路径保持一致：拿到「首次参与 +10」的那条记录同时占住名额，
+          // 否则种子数据会与真实运行时行为不一致（重跑时多出来的那条会抢到名额再加 10 分）。
+          firstClaimKey: priorCount === 0 ? `first:${c.id}:${contributorId}` : null,
           createdAt,
         },
       });

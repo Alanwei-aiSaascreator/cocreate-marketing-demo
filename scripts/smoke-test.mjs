@@ -98,8 +98,16 @@ async function readJson(res, label) {
   } catch {
     const ct = res.headers.get("content-type") || "?";
     const snippet = text.replace(/\s+/g, " ").trim().slice(0, 200);
+    // 服务端返回 HTML 而不是 JSON，最常见的不是业务 bug，而是 Next dev 的 .next
+    // 构建缓存损坏（日志里紧挨着会有一行 `○ Compiling /_error ...`）。
+    // 这里直接把解药写进报错里，省掉一轮「是不是我代码写错了」的误判。
+    const hint = ct.includes("text/html")
+      ? "\n      提示：拿到的是 HTML 错误页，不是 API 的 JSON。最常见的原因是 .next 构建缓存损坏 ——" +
+        "\n      停掉 dev server、删掉 .next 目录再重启即可（见 README「跑不起来？先看这三条」）。" +
+        "\n      先看 dev server 自己的 stderr，那里有真正的报错。"
+      : "";
     throw new Error(
-      `${label} 返回的不是 JSON（HTTP ${res.status}，content-type=${ct}）：${snippet}`,
+      `${label} 返回的不是 JSON（HTTP ${res.status}，content-type=${ct}）：${snippet}${hint}`,
     );
   }
 }
@@ -506,6 +514,63 @@ async function main() {
           await prisma.trackEvent.deleteMany({ where: { id: first.id } });
         }
       }
+      // 「首次参与 +10」的名额：同一活动同一老客只能有一个「首次」。
+      // 这条约束是唯一能挡住并发双击重复计分的东西 ——
+      // 应用层「数该老客已提交几次」在并发下必然两边都数到 0。
+      const smokeSub = await prisma.submission.findFirst({
+        where: { campaign: { merchant: { name: SMOKE_MERCHANT } } },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, campaignId: true, contributorId: true },
+      });
+      if (!smokeSub) {
+        ok("没有冒烟测试素材样本，跳过");
+      } else {
+        const claimKey = `first:smoketest:${Date.now()}`;
+        const makeClaim = (suffix) =>
+          prisma.contribution.create({
+            data: {
+              campaignId: smokeSub.campaignId,
+              contributorId: smokeSub.contributorId,
+              submissionId: null,
+              breakdown: JSON.stringify([]),
+              points: 0,
+              reason: `冒烟测试占位 ${suffix}`,
+              firstClaimKey: claimKey,
+            },
+          });
+
+        const firstClaim = await makeClaim("a");
+        try {
+          await makeClaim("b");
+          await prisma.contribution.deleteMany({ where: { firstClaimKey: claimKey } });
+          fail("首次参与名额唯一约束生效", "同一个名额竟然被抢到两次 —— +10 会被重复计");
+        } catch (err) {
+          check(
+            err?.code === "P2002",
+            "首次参与名额唯一约束生效（挡住 +10 重复计分）",
+            `拒绝码 ${err?.code}`,
+          );
+        } finally {
+          await prisma.contribution.deleteMany({ where: { id: firstClaim.id } });
+        }
+
+        // 光有约束还不够 —— 还要证明**提交接口真的在用这个名额**，
+        // 否则约束只是一条没人走的空规则。冒烟测试是全新活动，首提必须拿到名额。
+        //
+        // 注意这里是 findMany 而不是 findFirst：同一份素材在后面的「商家采用」环节
+        // 还会再产生一条贡献（同样挂着这个 submissionId），findFirst 可能先拿到那一条，
+        // 于是断言会因为取错行而误报失败。
+        const real = await prisma.contribution.findMany({
+          where: { submissionId: smokeSub.id },
+          select: { firstClaimKey: true },
+        });
+        const claim = real.find((c) => c.firstClaimKey);
+        check(
+          claim?.firstClaimKey === `first:${smokeSub.campaignId}:${smokeSub.contributorId}`,
+          "提交接口确实占用了首次参与名额",
+          claim?.firstClaimKey ?? `（该素材的 ${real.length} 条贡献都没有 firstClaimKey）`,
+        );
+      }
     } catch (err) {
       fail("数据库约束检查", err.message);
     } finally {
@@ -556,12 +621,89 @@ async function main() {
     fail("AI 设置页", err.message);
   }
 
-  // ── 12. 清理测试数据 ───────────────────────────────────
+  // ── 12. 半自动发布 + 扫码核销 ───────────────────────────
+  section("12. 半自动发布与扫码核销");
+  {
+    const prisma = new PrismaClient();
+    try {
+      // 发布标记：本项目**不调用任何平台接口**，所以「能发布」的验收标准
+      // 就是「复制/下载都备齐 + 标记能如实落库」，而不是「真的发到小红书了」。
+      const content = await prisma.generatedContent.findFirst({
+        where: { isPrimary: true },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!content) {
+        fail("没有可发布的内容样本");
+      } else {
+        const url = `${BASE}/api/merchant/contents/${content.id}/publish`;
+        const post = (published) =>
+          fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...merchantHeaders },
+            body: JSON.stringify({ published }),
+          });
+
+        const on = await post(true);
+        const onData = await readJson(on, "标记已发布");
+        const afterOn = await prisma.generatedContent.findUnique({
+          where: { id: content.id },
+          select: { publishedAt: true },
+        });
+        check(
+          on.ok && onData.published === true && !!afterOn?.publishedAt,
+          "标记已发布并真的落库",
+        );
+
+        const off = await post(false);
+        const afterOff = await prisma.generatedContent.findUnique({
+          where: { id: content.id },
+          select: { publishedAt: true },
+        });
+        check(off.ok && afterOff?.publishedAt === null, "取消发布后状态回落为 null");
+
+        const missing = await fetch(`${BASE}/api/merchant/contents/nope-not-real/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...merchantHeaders },
+          body: JSON.stringify({ published: true }),
+        });
+        check(missing.status === 404, "对不存在的内容返回 404（不是 500）", `HTTP ${missing.status}`);
+      }
+
+      // 扫码核销页：有效券码直达核销，无效券码给友好引导
+      const reward = await prisma.reward.findFirst({ where: { status: "issued" } });
+      if (!reward) {
+        ok("没有未核销的券样本，跳过扫码核销页检查");
+      } else {
+        const page = await fetch(`${BASE}/merchant/redeem/${reward.code}`, {
+          headers: merchantHeaders,
+        });
+        const html = await page.text();
+        check(
+          page.ok && html.includes(reward.code) && html.includes("核销"),
+          "扫码核销页显示券码与核销动作",
+          `HTTP ${page.status}`,
+        );
+      }
+      const dead = await fetch(`${BASE}/merchant/redeem/CC-ZZZZ-ZZZZ`, {
+        headers: merchantHeaders,
+      });
+      check(
+        (await dead.text()).includes("没找到这张券"),
+        "无效券码渲染友好引导页（而非默认 404）",
+      );
+    } catch (err) {
+      fail("半自动发布 / 扫码核销检查", err.message);
+    } finally {
+      await prisma.$disconnect();
+    }
+  }
+
+  // ── 13. 清理测试数据 ───────────────────────────────────
   // 冒烟测试每次都会建一个活动。不清理的话，反复跑几轮就把演示列表堆满了垃圾。
   // 用固定的测试店铺名做清理锚点（cascade 会连带删掉活动/素材/内容/奖励）。
   // 设 KEEP_SMOKE_DATA=1 可以保留，方便事后翻看。
   if (process.env.KEEP_SMOKE_DATA !== "1") {
-    section("12. 清理测试数据");
+    section("13. 清理测试数据");
     const prisma = new PrismaClient();
     try {
       const { count } = await prisma.merchant.deleteMany({ where: { name: SMOKE_MERCHANT } });

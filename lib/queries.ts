@@ -118,6 +118,8 @@ export interface CompareVariant {
   degraded: boolean;
   aiNote: string;
   shareToken: string;
+  /** 两版各自独立记录发布状态 —— 都发出去才能做真实的 A/B 对比 */
+  publishedAt: Date | null;
 }
 
 export interface DecodedContent {
@@ -133,6 +135,8 @@ export interface DecodedContent {
   degraded: boolean;
   variant: ContentVariant;
   adopted: boolean;
+  /** 半自动发布：商家标记的「已经发到平台上了」时间；null = 还没发 */
+  publishedAt: Date | null;
   shareToken: string;
   createdAt: Date;
   submissionId: string;
@@ -349,6 +353,7 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
       degraded: c.degraded,
       variant: (c.variant === "rule" ? "rule" : "llm") as ContentVariant,
       adopted: c.adopted,
+      publishedAt: c.publishedAt,
       shareToken: c.shareToken,
       createdAt: c.createdAt,
       submissionId: c.submissionId,
@@ -372,6 +377,7 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
             degraded: sibling.degraded,
             aiNote: sibling.aiNote,
             shareToken: sibling.shareToken,
+            publishedAt: sibling.publishedAt,
           }
         : null,
     };
@@ -727,5 +733,40 @@ export async function getContributorDashboard(
       code: r.code,
       status: r.status,
     })),
+  };
+}
+
+/**
+ * 按券码查一张券 —— 供「扫码核销」页使用。
+ *
+ * 为什么核销要有独立页面：原来商家只能在工作台的奖励列表里找那一张券再点核销，
+ * 老客站在柜台前就得等商家翻列表。改成老客出示二维码、商家扫码直接落到这一张券上，
+ * 才是一笔真实交易会有的节奏。
+ */
+export async function getRewardByCode(code: string) {
+  const r = await prisma.reward.findUnique({
+    where: { code },
+    include: {
+      contributor: { select: { nickname: true, avatarEmoji: true } },
+      campaign: {
+        select: { title: true, merchant: { select: { name: true } } },
+      },
+    },
+  });
+  if (!r) return null;
+
+  return {
+    id: r.id,
+    code: r.code,
+    title: r.title,
+    tierName: r.tierName,
+    type: r.type,
+    value: r.value,
+    status: r.status,
+    issuedAt: r.issuedAt,
+    redeemedAt: r.redeemedAt,
+    contributor: r.contributor,
+    campaignTitle: r.campaign.title,
+    merchantName: r.campaign.merchant.name,
   };
 }

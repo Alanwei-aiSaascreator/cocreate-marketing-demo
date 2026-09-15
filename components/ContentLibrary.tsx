@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ExternalLink, ShieldAlert, Sparkles } from "lucide-react";
 import { Badge, PlatformBadge, EmptyState } from "@/components/ui";
 import { AdoptButton, CopyButton } from "@/components/actions";
+import { PublishPanel } from "@/components/PublishPanel";
 import { cn } from "@/lib/utils";
 import { PLATFORM_META, VARIANT_HINT, VARIANT_LABEL, type ContentVariant, type Platform } from "@/lib/types";
 import type { DecodedContent } from "@/lib/queries";
@@ -18,6 +19,12 @@ export function ContentLibrary({ contents }: { contents: DecodedContent[] }) {
    * 两份产出并排看，才能直观说明规则引擎差在哪（标题截断、分点撞车、病句）。
    */
   const [shownVariant, setShownVariant] = useState<Record<string, ContentVariant>>({});
+  /**
+   * 发布状态本地覆盖。
+   * 点「标记已发布」后只更新这一条的状态，不整页 refresh ——
+   * refresh 会让所有卡片重新渲染、对比开关被重置，体验很割裂。
+   */
+  const [publishedMap, setPublishedMap] = useState<Record<string, boolean>>({});
   const comparableCount = useMemo(() => contents.filter((c) => c.compare).length, [contents]);
 
   const counts = useMemo(() => {
@@ -109,6 +116,11 @@ export function ContentLibrary({ contents }: { contents: DecodedContent[] }) {
             const shown = shownVariant[c.id] ?? c.variant;
             const usingCompare = shown !== c.variant && !!c.compare;
             const d = usingCompare && c.compare ? c.compare : c;
+            const shownId = d.id;
+            // 发布状态按「当前展示的那一版」算 —— 两版可以分别发布，用于对比效果
+            const isPublished =
+              publishedMap[shownId] ??
+              (shownId === c.id ? !!c.publishedAt : !!c.compare?.publishedAt);
 
             return (
             <div key={c.id} className="card p-4">
@@ -120,6 +132,7 @@ export function ContentLibrary({ contents }: { contents: DecodedContent[] }) {
                     {c.contributor.avatarEmoji} {c.contributor.nickname}
                   </span>
                   {c.adopted && <Badge tone="green">已采用</Badge>}
+                  {isPublished && <Badge tone="blue">已发布</Badge>}
                   {c.compare && (
                     <Badge tone={usingCompare ? "amber" : "blue"}>可对比两版</Badge>
                   )}
@@ -224,6 +237,17 @@ export function ContentLibrary({ contents }: { contents: DecodedContent[] }) {
                   分享落地页
                 </Link>
               </div>
+
+              <PublishPanel
+                contentId={shownId}
+                platform={c.platform}
+                title={d.title}
+                body={d.body}
+                tags={d.tags}
+                imageUrl={c.imageUrl}
+                published={isPublished}
+                onPublishedChange={(v) => setPublishedMap((m) => ({ ...m, [shownId]: v }))}
+              />
             </div>
             );
           })}

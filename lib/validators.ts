@@ -34,6 +34,11 @@ export const adoptSchema = z.object({
   adopted: z.boolean(),
 });
 
+/** 半自动发布：商家标记这条内容有没有真的发到平台上 */
+export const publishSchema = z.object({
+  published: z.boolean(),
+});
+
 export function firstIssue(error: z.ZodError): string {
   const issue = error.issues[0];
   if (!issue) return "参数不合法";

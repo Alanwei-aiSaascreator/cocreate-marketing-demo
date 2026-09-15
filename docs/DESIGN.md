@@ -394,8 +394,19 @@ if (!exists) await prisma.contribution.create({ ... });
 ```prisma
 Reward      @@unique([campaignId, contributorId, tierName])
 Contribution @@unique([submissionId, reason])
+Contribution @@unique([firstClaimKey])   // 「首次参与 +10」的名额
 TrackEvent  @@unique([contentId, type, viewerKey])
 ```
+
+**「首次参与 +10」这一条是最后才补上的**，因为它比前两条棘手得多：
+前两条的冲突对象是「同一份素材 / 同一条内容」，一个唯一键就够；
+而它的冲突对象是**一对（活动, 老客）** —— 两次并发提交的 `submissionId` 本来就不同，
+`@@unique([submissionId, reason])` 根本挡不住。
+
+解法是让数据库**发名额**：抢到的请求保留这 10 分，并把 claim key（`first:<campaignId>:<contributorId>`）
+写进自己的贡献记录；没抢到的那个撞上 P2002，就去掉这 10 分重新计分，
+并同步改正已经落库的 `submission.points` 和返回给老客的 `points` ——
+否则界面上显示的分数会比他实际拿到的多，那又变成了一次「承诺与行为不一致」。
 
 写入口只在捕获 `P2002` 时跳过，**其它错误必须照抛** ——
 静默吞掉数据库故障会让「券没发出去」变得无声无息。

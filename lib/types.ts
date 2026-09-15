@@ -21,6 +21,16 @@ export interface PlatformMeta {
   tagStyle: string;
   /** 展示用主色 */
   accent: string;
+  /**
+   * 该平台的网页版创作入口。
+   *
+   * **留空表示这个平台没有可用的网页发布入口**（只能在 App 内发）。
+   * 这类平台必须如实说明并给出行之有效的替代路径，
+   * 而不是塞一个点进去没用的链接 —— 那比不给链接更浪费时间。
+   */
+  publishUrl?: string;
+  /** 发布方式说明，原样展示给商家看 */
+  publishNote: string;
 }
 
 export const PLATFORM_META: Record<Platform, PlatformMeta> = {
@@ -33,6 +43,8 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     length: [300, 600],
     tagStyle: "3-6 个话题标签，含 1 个城市词 + 1 个品类词 + 1 个场景词",
     accent: "#ff2442",
+    publishUrl: "https://creator.xiaohongshu.com/publish/publish",
+    publishNote: "网页版创作中心可以直接发图文：标题、正文、标签都能粘贴，实拍图另存后上传。",
   },
   douyin: {
     id: "douyin",
@@ -43,6 +55,8 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     length: [80, 150],
     tagStyle: "2-4 个标签，含地域词和品类词，避免堆砌",
     accent: "#000000",
+    publishUrl: "https://creator.douyin.com/",
+    publishNote: "网页版创作者中心可上传，但这条是口播文案 —— 需要自己录一段或配画面，它本身不是成片。",
   },
   dianping: {
     id: "dianping",
@@ -53,6 +67,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     length: [150, 300],
     tagStyle: "标签少而准，2-3 个",
     accent: "#ff6633",
+    publishNote: "点评没有网页发布入口，只能在「大众点评」App 里发。复制文案 → 到店铺页写评价 → 粘贴。",
   },
   moments: {
     id: "moments",
@@ -63,6 +78,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     length: [30, 80],
     tagStyle: "不加话题标签，最多 2 个 emoji",
     accent: "#07c160",
+    publishNote: "朋友圈只能在微信 App 内发。这条通常是发给老客本人、让他自己发的，不建议商家代发。",
   },
 };
 

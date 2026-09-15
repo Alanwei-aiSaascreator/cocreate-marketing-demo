@@ -177,6 +177,14 @@ model GeneratedContent {
   adopted   Boolean   @default(false)
   adoptedAt DateTime?
 
+  /// 发布落地标记（半自动发布）。
+  ///
+  /// 各平台都**没有**面向第三方的图文发布接口，所以这里刻意不做「一键发布」——
+  /// 假装能自动发出去只是骗人。真实做法是：站内备好文案/标签/配图 → 打开平台创作页
+  /// → 商家粘贴发布 → 回来标记「已发布」。这个字段记录的就是最后那一步，
+  /// 商家据此判断哪些素材还没真正用上。
+  publishedAt DateTime?
+
   /// 内容短码，用于生成可追踪的分享链接（引流归因）。
   /// 两个版本各自持有独立的 token —— 于是可以把两种产出都分享出去做真实对比。
   shareToken String @unique
@@ -206,6 +214,17 @@ model Contribution {
   breakdown String @default("[]")
   points    Int    @default(0)
   reason    String @default("")
+
+  /// 「首次参与本活动 +10」是**每活动每老客一次**的一次性资源，必须由数据库保证只发一次。
+  ///
+  /// 为什么需要这一列：这个奖励原来靠应用层「数该老客在本活动已提交几次」来判断，
+  /// 而并发双击时两个请求都会数到 0，同一份 +10 就被加两次 —— 金额不大，但账是错的。
+  /// 下面那条 @@unique([submissionId, reason]) 挡不住它：两次提交的 submissionId 本来就不同。
+  /// 所以改成「抢名额」：抢到的那个请求保留这 10 分，没抢到的（P2002）走重算分支把它去掉。
+  ///
+  /// 值形如 first:<campaignId>:<contributorId>；其余贡献路径一律为 null ——
+  /// SQLite 的唯一索引把多个 NULL 视为互不相同，所以不影响它们。
+  firstClaimKey String? @unique
 
   createdAt DateTime @default(now())
 
