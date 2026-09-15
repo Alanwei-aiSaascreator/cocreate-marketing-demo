@@ -403,23 +403,30 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     pointsIssued: contributions.reduce((sum, c) => sum + c.points, 0),
   };
 
-  // AI 生成质量：把「大模型 / 按设计的规则引擎 / 真实降级」三者严格分开统计
+  // AI 生成质量：把「大模型 / 按设计的规则引擎 / 真实降级」三者严格分开统计。
+  // 三者各自独立计数，保证互不重叠、加起来不超过总数 ——
+  // 早先用「总数 - 大模型 - 降级」反推，一旦出现 aiMode=llm 且 degraded=true 的行
+  // （写库时整批覆盖就会造出这种行），就会算出负数并渲染出「-4」「-100%」。
   const cfg = llmConfig();
   const llmCount = contents.filter((c) => c.aiMode === "llm").length;
   const degradedContents = contents.filter((c) => c.degraded);
+  const byDesignCount = contents.filter((c) => c.aiMode !== "llm" && !c.degraded).length;
   const reasonMap = new Map<string, number>();
   for (const c of degradedContents) {
     const key = c.aiNote || "（未记录原因）";
     reasonMap.set(key, (reasonMap.get(key) ?? 0) + 1);
   }
 
+  // 比例分母用三者之和，保证进度条宽度恰好铺满
+  const partsTotal = llmCount + degradedContents.length + byDesignCount || 1;
+
   const aiQuality: AiQuality = {
     total: contents.length,
     llm: llmCount,
-    ruleByDesign: contents.length - llmCount - degradedContents.length,
+    ruleByDesign: byDesignCount,
     degraded: degradedContents.length,
-    llmRate: contents.length > 0 ? llmCount / contents.length : 0,
-    degradedRate: contents.length > 0 ? degradedContents.length / contents.length : 0,
+    llmRate: llmCount / partsTotal,
+    degradedRate: degradedContents.length / partsTotal,
     reasons: Array.from(reasonMap.entries())
       .map(([note, count]) => ({ note, count }))
       .sort((a, b) => b.count - a.count),

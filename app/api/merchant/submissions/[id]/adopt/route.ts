@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { settleContributor } from "@/lib/domain/settle";
+import { settleContributor, expireDowngradedRewards } from "@/lib/domain/settle";
 import { adoptPointItem } from "@/lib/domain/scoring";
 import { adoptSchema } from "@/lib/validators";
 
@@ -52,22 +53,32 @@ export async function POST(
     });
     await prisma.submission.update({ where: { id }, data: { status: "adopted" } });
 
+    // 幂等：先查一次是快速路径，真正的保证是 Contribution 上的
+    // @@unique([submissionId, reason]) —— 并发双击时两个请求都会查不到，
+    // 后到的那个会撞唯一约束，被下面的 catch 吞掉。
     const exists = await prisma.contribution.findFirst({
       where: { submissionId: id, reason: ADOPT_REASON },
       select: { id: true },
     });
     if (!exists) {
       const item = adoptPointItem();
-      await prisma.contribution.create({
-        data: {
-          campaignId: submission.campaignId,
-          contributorId: submission.contributorId,
-          submissionId: id,
-          breakdown: JSON.stringify([item]),
-          points: item.points,
-          reason: ADOPT_REASON,
-        },
-      });
+      try {
+        await prisma.contribution.create({
+          data: {
+            campaignId: submission.campaignId,
+            contributorId: submission.contributorId,
+            submissionId: id,
+            breakdown: JSON.stringify([item]),
+            points: item.points,
+            reason: ADOPT_REASON,
+          },
+        });
+      } catch (err) {
+        // 只吞唯一约束冲突（并发同伴已经加过分了），其它错误照抛
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) {
+          throw err;
+        }
+      }
     }
   } else {
     await prisma.generatedContent.updateMany({
@@ -80,9 +91,14 @@ export async function POST(
 
   const settled = await settleContributor(submission.campaignId, submission.contributorId);
 
+  // 撤销采用会让贡献值回落。如果老客已经靠这部分分数越过了档位、拿到了券，
+  // 那几张还没核销的券必须一并作废 —— 否则账本上会出现没有贡献支撑的券。
+  const expired = await expireDowngradedRewards(submission.campaignId, submission.contributorId);
+
   return NextResponse.json({
     ok: true,
     adopted,
     ...settled,
+    expiredRewards: expired.expired,
   });
 }

@@ -106,6 +106,9 @@ export function RedeemButton({
   if (status === "redeemed") {
     return <span className="text-xs text-ink-400">已核销</span>;
   }
+  if (status === "expired") {
+    return <span className="text-xs text-ink-400">已失效</span>;
+  }
 
   async function redeem() {
     setBusy(true);

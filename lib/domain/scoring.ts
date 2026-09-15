@@ -43,6 +43,16 @@ const COMPLETE = 5;
 const FIRST_TIME = 10;
 /** 命中重复图风险 */
 const DUPLICATE_PENALTY = -20;
+/**
+ * 便捷提交次数。超出后基础分下调。
+ *
+ * 这条规则必须真实存在：原来风控提示里写着「超出部分不计入有效贡献」，
+ * 但代码里没有任何实现 —— 第 4 次及以后照样拿满分。
+ * 界面上的承诺和代码行为不一致，就是在骗用户。
+ */
+export const FREE_SUBMISSIONS = 3;
+/** 超出便捷提交次数后的基础分 */
+const BASE_OVER_LIMIT = 5;
 
 export function scoreSubmission(input: ScoreInput): ScoreResult {
   const breakdown: PointItem[] = [];
@@ -51,12 +61,21 @@ export function scoreSubmission(input: ScoreInput): ScoreResult {
   const filledText = requiredTextFields.filter((f) => (answers[f.id] || "").trim().length > 0);
   const missingText = requiredTextFields.filter((f) => !(answers[f.id] || "").trim());
   const missingImage = imageRequired && !input.imageUrl;
+  const overLimit = input.priorSubmissions >= FREE_SUBMISSIONS;
 
-  breakdown.push({
-    label: "提交合格素材",
-    points: BASE,
-    note: "保底分，鼓励参与 —— 先愿意开口，才谈得上共创。",
-  });
+  breakdown.push(
+    overLimit
+      ? {
+          label: "提交素材（超出便捷次数）",
+          points: BASE_OVER_LIMIT,
+          note: `本次活动你已提交 ${input.priorSubmissions} 次，第 ${FREE_SUBMISSIONS + 1} 次起基础分从 ${BASE} 降到 ${BASE_OVER_LIMIT} —— 鼓励「少而真」，而不是为凑分重复提交。`,
+        }
+      : {
+          label: "提交合格素材",
+          points: BASE,
+          note: "保底分，鼓励参与 —— 先愿意开口，才谈得上共创。",
+        },
+  );
 
   if (input.imageUrl) {
     breakdown.push({

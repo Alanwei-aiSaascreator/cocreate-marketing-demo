@@ -444,6 +444,8 @@ export default async function WorkspacePage({
                       <td className="px-5 py-3">
                         {r.status === "redeemed" ? (
                           <Badge tone="gray">已核销</Badge>
+                        ) : r.status === "expired" ? (
+                          <Badge tone="red">已失效</Badge>
                         ) : (
                           <Badge tone="green">待使用</Badge>
                         )}

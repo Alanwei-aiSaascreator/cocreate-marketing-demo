@@ -66,10 +66,6 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
   },
 };
 
-export function isPlatform(v: string): v is Platform {
-  return (PLATFORMS as readonly string[]).includes(v);
-}
-
 // ── AI 生成的平台内容框架 ────────────────────────────────
 export interface PlatformFrame {
   platform: Platform;

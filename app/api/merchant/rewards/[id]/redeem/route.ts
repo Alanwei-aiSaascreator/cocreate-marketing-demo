@@ -15,6 +15,12 @@ export async function POST(
   if (reward.status === "redeemed") {
     return NextResponse.json({ error: "这张券已经核销过了" }, { status: 400 });
   }
+  if (reward.status === "expired") {
+    return NextResponse.json(
+      { error: "这张券已失效：对应的贡献值被撤销，已经不够档位了" },
+      { status: 400 },
+    );
+  }
 
   const updated = await prisma.reward.update({
     where: { id },

@@ -6,6 +6,7 @@
  * Demo 阶段只做能解释、可演示的几条，完整反刷是后置项。
  */
 import type { RiskFlag } from "../types";
+import { FREE_SUBMISSIONS } from "./scoring";
 
 export interface RiskInput {
   answers: Record<string, string>;
@@ -106,35 +107,16 @@ export function detectRisks(input: RiskInput): RiskFlag[] {
     });
   }
 
-  // 6. 频次限制
-  if (input.priorSubmissions >= 3) {
+  // 6. 频次限制。计数口径是**本次活动累计**（不分天），文案必须如实说明，
+  //    并且要指向真正实现了的规则（超出便捷次数后基础分下调），不能承诺没实现的扣减。
+  if (input.priorSubmissions >= FREE_SUBMISSIONS) {
     flags.push({
       code: "rate_limit",
       label: "提交频次偏高",
       level: "warn",
-      note: `你今天已经提交了 ${input.priorSubmissions} 次，超出部分不计入有效贡献。`,
+      note: `本次活动你已提交 ${input.priorSubmissions} 次（累计，不分天）。第 ${FREE_SUBMISSIONS + 1} 次起基础分下调 —— 重复的同类内容对内容库价值有限。`,
     });
   }
 
   return flags;
-}
-
-export function hasBlockingFlag(flags: RiskFlag[]): boolean {
-  return flags.some((f) => f.level === "block");
-}
-
-export interface RiskSummary {
-  blocked: number;
-  warned: number;
-  clean: number;
-  labels: string[];
-}
-
-export function summarizeRisks(flags: RiskFlag[]): RiskSummary {
-  return {
-    blocked: flags.filter((f) => f.level === "block").length,
-    warned: flags.filter((f) => f.level === "warn").length,
-    clean: flags.filter((f) => f.level === "info").length,
-    labels: flags.map((f) => f.label),
-  };
 }

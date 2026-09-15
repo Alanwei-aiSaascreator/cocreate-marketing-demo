@@ -14,26 +14,6 @@ export function Card({
   return <div className={cn("card p-5", hover && "card-hover", className)}>{children}</div>;
 }
 
-export function SectionTitle({
-  title,
-  desc,
-  right,
-}: {
-  title: string;
-  desc?: string;
-  right?: ReactNode;
-}) {
-  return (
-    <div className="mb-4 flex items-end justify-between gap-4">
-      <div>
-        <h2 className="text-base font-semibold text-ink-900">{title}</h2>
-        {desc && <p className="hint mt-1">{desc}</p>}
-      </div>
-      {right}
-    </div>
-  );
-}
-
 const BADGE_TONES = {
   brand: "bg-brand-50 text-brand-700 border-brand-200",
   gray: "bg-ink-100 text-ink-600 border-ink-200",

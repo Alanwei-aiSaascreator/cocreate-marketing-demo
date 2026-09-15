@@ -185,6 +185,10 @@ model Contribution {
 
   @@index([campaignId])
   @@index([contributorId])
+  /// 同一笔素材 + 同一个理由只能记一次贡献。
+  /// 「采用 +30」原本靠应用层 findFirst 检查幂等，并发下两个请求都会查不到而各加一次，
+  /// 一条内容就能拿 60 分。改由数据库约束保证。
+  @@unique([submissionId, reason])
 }
 
 /// 奖励账本：优先发店铺福利（券/赠品），而不是现金
@@ -209,6 +213,9 @@ model Reward {
 
   @@index([campaignId])
   @@index([contributorId])
+  /// 同一档位只发一次。应用层「先查已发档位、再插入」挡不住并发
+  /// （两个请求会同时查到"未发放"），双击提交就能拿到两份券。
+  @@unique([campaignId, contributorId, tierName])
 }
 
 /// 行为事件：引流归因的钩子。
@@ -227,8 +234,15 @@ model TrackEvent {
   /// JSON Record<string,string> 渠道、UA 摘要等
   meta String @default("{}")
 
+  /// 访客指纹，用于「同一访客对同一条内容只计一次」。
+  /// 不能只靠 cookie 里的 viewer token：不带 cookie 的脚本每次请求都会被发一个新 token，
+  /// 等于换个身份就能重复刷分。cookie 缺失时退化用 IP+UA 的哈希。
+  viewerKey String?
+
   createdAt DateTime @default(now())
 
   @@index([campaignId, type])
   @@index([contentId])
+  /// 数据库级去重，挡住并发双击与脚本刷分（应用层先查后插挡不住）
+  @@unique([contentId, type, viewerKey])
 }

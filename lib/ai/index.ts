@@ -11,7 +11,7 @@
 import { PLATFORM_META, type AiMode, type ComposedContent, type Platform, type PlatformFrame, type RewardTier, type TaskField } from "../types";
 import { llmConfig, llmJson } from "./deepseek";
 import { BLUEPRINT_SYSTEM, COMPOSE_SYSTEM, blueprintUserPrompt, composeUserPrompt, platformSpecText } from "./prompts";
-import { ruleBlueprint, ruleCompose, complianceCheck, type CampaignLike, type MerchantLike, type SubmissionLike } from "./rules";
+import { ruleBlueprint, ruleCompose, complianceCheck, SCENE_OPTIONS, type CampaignLike, type MerchantLike, type SubmissionLike } from "./rules";
 import { canonicalThresholds } from "../domain/scoring";
 import { blueprintSchema, composeBundleSchema, composedContentSchema, platformFrameSchema, rewardTierSchema, taskFieldSchema } from "./schemas";
 import type {
@@ -49,6 +49,22 @@ function fallbackTitle(body: string, platform: Platform): string {
     .find(Boolean);
   if (!line) return PLATFORM_META[platform].name;
   return line.length > 30 ? `${line.slice(0, 29)}…` : line;
+}
+
+/**
+ * LLM_MODE=llm 是**严格模式**：不允许静默降级，失败必须抛出来。
+ *
+ * 这个分支原先不存在 —— `.env.example` 和 `scripts/compare-engines.ts` 都写着
+ * 「llm = 强制走模型（失败即报错）」，但代码里 llm 与 auto 的唯一区别只是 enabled，
+ * 失败照样安静地退回模板。于是 compare-engines 会打印一大段看似正常的模板内容
+ * 并正常退出，恰好制造了它声称要避免的「误以为看到的是大模型产出」。
+ *
+ * 注释承诺的事必须在代码里真的做到，否则就是撒谎注释。
+ */
+function assertStrictMode(cfg: { mode: string }, err: string): void {
+  if (cfg.mode === "llm") {
+    throw new Error(`LLM_MODE=llm（严格模式）要求必须走大模型，但本次失败：${err}`);
+  }
 }
 
 // ── 1. 活动蓝图 ──────────────────────────────────────────
@@ -99,6 +115,7 @@ export async function generateBlueprint(
   });
 
   if (!res.ok) {
+    assertStrictMode(cfg, res.error);
     return fallback(true, `模型调用失败，已自动降级到规则引擎。原因：${res.error}`);
   }
 
@@ -176,37 +193,110 @@ function ensureFrames(
 }
 
 /**
- * 任务卡归一化。两条硬保证，不依赖模型的自觉：
- * 1. 必须包含一张实拍图 —— 这是整套玩法的可信度地基。
- * 2. 至少 3 个字段 —— 否则老客没什么可填的，AI 也没素材可加工。
- *    模型只吐出 1-2 个字段时，整张卡改用规则引擎版本，而不是硬凑一张残缺的卡。
+ * 语义字段的固定 id。
+ *
+ * 系统按这些 id 计分和取文案：`answers.detail` 才给「具体细节 +5」，
+ * `answers.feeling` 才进风控的灌水检测，规则引擎也按这几个 id 拼正文。
+ * 但任务卡是模型生成的 —— 它把 feeling 写成 experience，那一档加分就会**静默失效**，
+ * H5 还会直接显示英文 id。所以必须把模型的命名归一化回来。
+ */
+const CANONICAL_FIELDS: { id: string; type: TaskField["type"]; synonyms: string[] }[] = [
+  {
+    id: "feeling",
+    type: "textarea",
+    synonyms: ["feeling", "feel", "impression", "experience", "thought", "感受", "印象", "体验"],
+  },
+  {
+    id: "recommend",
+    type: "text",
+    synonyms: ["recommend", "recommendation", "dish", "item", "food", "推荐", "招牌", "必点"],
+  },
+  {
+    id: "scene",
+    type: "choice",
+    synonyms: ["scene", "occasion", "context", "situation", "场景", "场合"],
+  },
+  {
+    id: "detail",
+    type: "text",
+    synonyms: ["detail", "details", "story", "moment", "memory", "细节", "故事"],
+  },
+  {
+    id: "image",
+    type: "image",
+    synonyms: ["image", "photo", "picture", "img", "pic", "图片", "照片", "实拍图"],
+  },
+];
+
+function canonicalFieldId(rawId: string, type: TaskField["type"]): string {
+  const key = (rawId || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  for (const f of CANONICAL_FIELDS) {
+    if (f.id === key || f.synonyms.includes(key)) return f.id;
+  }
+  // 类型比名字可靠：模型可能把它叫 photo_upload
+  if (type === "image") return "image";
+  return rawId;
+}
+
+/**
+ * 任务卡归一化。三条硬保证，都不依赖模型的自觉：
+ * 1. 语义 id 必须齐（feeling / recommend / scene / detail / image）—— 缺一个就有加分静默失效。
+ * 2. 必须包含实拍图字段 —— 这是整套玩法的可信度地基。
+ * 3. 至少 3 个字段 —— 否则老客没什么可填，AI 也没素材可加工；不足时整张卡用规则引擎版本。
  */
 function ensureTaskCard(taskCard: RawTaskField[], merchant: MerchantLike): TaskField[] {
   const ruleCard = ruleBlueprint(merchant, { title: "", objective: "", platforms: [] }).taskCard;
 
   if (taskCard.length < 3) return ruleCard;
 
-  const normalized: TaskField[] = taskCard.slice(0, 6).map((f) => ({
-    id: f.id,
-    label: f.label,
-    type: f.type ?? "text",
-    placeholder: f.placeholder ?? "",
-    why: f.why ?? "",
-    options:
-      f.type === "choice" && (!f.options || f.options.length === 0)
-        ? ["friends", "family", "solo", "date", "colleagues"]
-        : f.options,
-    required: f.required ?? true,
-    // 模型经常忘记给 maxLength。而这个字段是「逼出短而真表达」的关键，
-    // 所以服务端补一个默认上限，不让产品意图依赖模型的自觉。
-    maxLength:
-      f.maxLength ?? (f.type === "textarea" ? 120 : f.type === "text" ? 40 : undefined),
-  }));
+  const byCanonical = new Map<string, TaskField>();
+  const extras: TaskField[] = [];
 
-  if (normalized.some((f) => f.type === "image")) return normalized;
+  for (const f of taskCard.slice(0, 6)) {
+    const type = f.type ?? "text";
+    const id = canonicalFieldId(f.id, type);
+    const field: TaskField = {
+      id,
+      label: f.label,
+      type,
+      placeholder: f.placeholder ?? "",
+      why: f.why ?? "",
+      // 选项一律用系统内置的中文场景项：模型给的英文 key 前端映射不到，
+      // 还会被规则引擎原样拼进正文（「with_friends 过来的。」）
+      options: type === "choice" ? [...SCENE_OPTIONS] : undefined,
+      required: f.required ?? true,
+      // 模型经常忘记给 maxLength，而它是「逼出短而真表达」的关键，服务端补默认值
+      maxLength: f.maxLength ?? (type === "textarea" ? 120 : type === "text" ? 40 : undefined),
+    };
 
-  const imageField = ruleCard.find((f) => f.type === "image")!;
-  return [...normalized, imageField];
+    const isCanonical = CANONICAL_FIELDS.some((c) => c.id === id);
+    if (!isCanonical) {
+      extras.push(field);
+    } else if (!byCanonical.has(id)) {
+      byCanonical.set(id, field);
+    }
+  }
+
+  // 先保证语义字段齐（缺的用规则引擎版本补），再考虑模型给的额外自定义字段
+  const result: TaskField[] = [];
+  for (const need of CANONICAL_FIELDS) {
+    const fromModel = byCanonical.get(need.id);
+    const fallback = ruleCard.find((r) => r.id === need.id);
+    const field = fromModel ?? fallback;
+    if (field) result.push(field);
+  }
+  for (const extra of extras) {
+    if (result.length >= 6) break;
+    result.push(extra);
+  }
+
+  // 兜底：无论如何都要有实拍图字段
+  if (!result.some((f) => f.type === "image")) {
+    const imageField = ruleCard.find((f) => f.type === "image");
+    if (imageField) result.push(imageField);
+  }
+
+  return result;
 }
 
 function ensureRewardTiers(tiers: RawRewardTier[], merchant: MerchantLike): RewardTier[] {
@@ -308,6 +398,7 @@ export async function composeContents(
   });
 
   if (!res.ok) {
+    assertStrictMode(cfg, res.error);
     return byRule(true, `模型调用失败，已自动降级到规则引擎。原因：${res.error}`);
   }
 

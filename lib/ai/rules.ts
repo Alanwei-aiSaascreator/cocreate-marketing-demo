@@ -62,15 +62,71 @@ function unitWord(category: string): string {
   return "项目";
 }
 
+/**
+ * 场景选项用**中文原值**，不再用 friends/family 这类英文 key。
+ *
+ * 原因：原来选项是英文 key、中文标签硬编码在前端组件里。可任务卡是 AI 生成的 ——
+ * 模型一旦把 key 写成 with_friends，前端映射不到、H5 直接显示英文，
+ * 规则引擎还会把它拼进正文（「with_friends 过来的。」）。
+ * 让选项本身就是可直接展示、可直接入文的中文，这一整类耦合问题就消失了。
+ */
+export const SCENE_OPTIONS = ["和朋友聚会", "带家人", "一个人", "约会", "同事聚餐"];
+
+/** 兼容历史数据里的英文 key */
+const LEGACY_SCENE: Record<string, string> = {
+  friends: "和朋友聚会",
+  family: "带家人",
+  solo: "一个人",
+  date: "约会",
+  colleagues: "同事聚餐",
+};
+
 function sceneLabel(raw: string): string {
-  const map: Record<string, string> = {
-    friends: "和朋友聚会",
-    family: "带家人",
-    solo: "一个人",
-    date: "约会",
-    colleagues: "同事聚餐",
-  };
-  return map[raw] ?? (raw || "路过顺便");
+  const v = (raw || "").trim();
+  if (!v) return "路过顺便";
+  return LEGACY_SCENE[v] ?? v;
+}
+
+/**
+ * 把商家禁词替换成安全的替代表达。
+ *
+ * 为什么必须有：风控提示里写着「AI 会在加工时替换成安全说法」。
+ * 走大模型时提示词能保证这件事，但**走规则引擎时原来只做标记、内容里原样保留** ——
+ * 那句承诺在默认路径（没配 key）下就是假的，带禁词的内容照样入库、照样能分享出去。
+ *
+ * 只替换**长且无歧义**的词。像「第一」「绝对」这种短词一旦位置替换
+ * （「第一次来」→「很受欢迎次来」）会改出病句，宁可不动、留给商家处理。
+ */
+const SAFE_SUBSTITUTE: Record<string, string> = {
+  最好吃: "很好吃",
+  最好喝: "很好喝",
+  最正宗: "很正宗",
+  纯天然: "食材新鲜",
+  治疗: "改善",
+  顶级: "很高级",
+  最强: "很强",
+};
+
+export function sanitizeBannedWords(
+  text: string,
+  bannedWords: string[],
+): { text: string; replaced: string[]; remaining: string[] } {
+  let out = text;
+  const replaced: string[] = [];
+  const remaining: string[] = [];
+
+  for (const w of bannedWords) {
+    if (!w || !out.includes(w)) continue;
+    const safe = SAFE_SUBSTITUTE[w];
+    if (safe) {
+      out = out.split(w).join(safe);
+      replaced.push(w);
+    } else {
+      remaining.push(w);
+    }
+  }
+
+  return { text: out, replaced, remaining };
 }
 
 // ── 1. 生成活动蓝图：平台框架 + 任务卡 + 奖励阶梯 ──────────
@@ -151,7 +207,7 @@ export function ruleBlueprint(
       type: "choice",
       placeholder: "选一个就好",
       why: "场景决定了内容适合投给谁，是平台推荐流里最吃香的标签之一。",
-      options: ["friends", "family", "solo", "date", "colleagues"],
+      options: [...SCENE_OPTIONS],
       required: true,
     },
     {
@@ -314,7 +370,22 @@ export function ruleCompose(
       .join("\n");
   }
 
-  const complianceNote = complianceCheck([title, body].join("\n"), merchant.bannedWords);
+  // 合规处理：能安全替换的禁词直接换掉，拿不准的保留但明确标出。
+  // 这样「AI 会替换成安全说法」这句承诺在规则引擎路径下也是真的。
+  const sanitized = sanitizeBannedWords([title, body].join("\n"), merchant.bannedWords);
+  const parts = sanitized.text.split("\n");
+  title = parts[0] ?? title;
+  body = parts.slice(1).join("\n");
+
+  const notes: string[] = [];
+  if (sanitized.replaced.length > 0) {
+    notes.push(`已自动替换禁词：${sanitized.replaced.join("、")}`);
+  }
+  if (sanitized.remaining.length > 0) {
+    notes.push(
+      `⚠️ 无法安全替换，需人工处理：${sanitized.remaining.join("、")}（位置替换会改出病句，故保留原文）`,
+    );
+  }
 
   return {
     platform,
@@ -322,7 +393,8 @@ export function ruleCompose(
     body,
     tags,
     coverHint: coverHintFor(platform, recommend, merchant),
-    complianceNote: complianceNote || `已按${meta.name}调性输出，字数落在 ${meta.length[0]}-${meta.length[1]} 区间内。`,
+    complianceNote:
+      notes.join("；") || `已按${meta.name}调性输出，字数落在 ${meta.length[0]}-${meta.length[1]} 区间内。`,
   };
 }
 

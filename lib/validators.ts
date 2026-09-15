@@ -17,7 +17,13 @@ export const campaignCreateSchema = z.object({
   campaign: z.object({
     title: z.string().min(1, "活动名称必填").max(50),
     objective: z.string().min(1).max(20),
-    platforms: z.array(z.enum(PLATFORMS)).min(1, "至少选择一个平台").max(4),
+    platforms: z
+      .array(z.enum(PLATFORMS))
+      .min(1, "至少选择一个平台")
+      .max(4)
+      // 去重：重复平台会让一次提交落库多条完全相同的内容，
+      // 内容库的分母和 React 的 key 都会出错
+      .refine((arr) => new Set(arr).size === arr.length, "平台不能重复选择"),
     brief: z.string().max(300).default(""),
   }),
 });

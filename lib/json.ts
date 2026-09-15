@@ -1,6 +1,10 @@
 /**
  * SQLite 不支持 Json 类型，所有结构化字段以 String 存 JSON。
  * 这里做一层类型化出入口，避免到处写 try/catch 的 JSON.parse。
+ *
+ * 写入侧故意**不**提供 stringify 包装：全仓统一用 `JSON.stringify(x)`，
+ * 多一层同名包装只会让人以为它有额外语义。读取侧的 parseJson 则必须有，
+ * 因为它承担了「脏数据不能炸页面」这个职责。
  */
 
 export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
@@ -11,22 +15,4 @@ export function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-export function stringifyJson(value: unknown): string {
-  return JSON.stringify(value ?? null);
-}
-
-/** 把 DB 行里的 JSON 字段一次性解开成对象 */
-export function hydrate<T extends Record<string, unknown>>(
-  row: T,
-  keys: (keyof T)[],
-  fallbacks: Record<string, unknown> = {},
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...row };
-  for (const key of keys) {
-    const k = String(key);
-    out[k] = parseJson(row[key] as unknown as string, fallbacks[k] ?? null);
-  }
-  return out;
 }

@@ -247,8 +247,10 @@ export async function POST(
         tags: JSON.stringify(item.tags),
         coverHint: item.coverHint,
         complianceNote: item.complianceNote,
-        aiMode: composed.aiMode,
-        degraded: composed.degraded,
+        // 逐条写真实来源。写成 composed.aiMode 是错的 —— 模型可能只给了部分平台，
+        // 其余是规则引擎补的，整批写同一个值会让那条模板内容在库里被标成「大模型产出」。
+        aiMode: item.source,
+        degraded: item.fallback,
         aiNote: composed.note,
         shareToken: shareToken(),
       },

@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { compressImage, formatBytes } from "@/lib/image-client";
 import { PLATFORM_META, type PointItem, type RewardTier, type RiskFlag, type TaskField } from "@/lib/types";
 
 interface ComposedItem {
@@ -69,6 +70,8 @@ export function SubmitForm({
   const [name, setName] = useState(nickname);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [imageNote, setImageNote] = useState("");
+  const [compressing, setCompressing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState(0);
   const [error, setError] = useState("");
@@ -77,18 +80,48 @@ export function SubmitForm({
 
   const imageField = taskCard.find((f) => f.type === "image");
 
-  function pickFile(f: File | null) {
-    setFile(f);
-    if (preview) URL.revokeObjectURL(preview);
-    setPreview(f ? URL.createObjectURL(f) : null);
+  /**
+   * 选图即压缩。
+   *
+   * 手机直出照片常有 3–12MB，超过后端上限；老客在 H5 里没有任何办法自己压，
+   * 所以在这里用 canvas 缩到长边 1600px + JPEG 0.82，通常降到几百 KB。
+   * 顺带把 iPhone 的 HEIC 统一转成 JPEG。压缩失败则原样上传，不阻断老客。
+   */
+  async function pickFile(raw: File | null) {
     setError("");
+    if (!raw) {
+      setFile(null);
+      setImageNote("");
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(null);
+      return;
+    }
+
+    setCompressing(true);
+    setImageNote("");
+    try {
+      const result = await compressImage(raw);
+      setFile(result.file);
+      setImageNote(result.note);
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(URL.createObjectURL(result.file));
+    } catch {
+      // compressImage 内部已兜底，这里只防它自身抛异常
+      setFile(raw);
+      if (preview) URL.revokeObjectURL(preview);
+      setPreview(URL.createObjectURL(raw));
+      setImageNote("");
+    } finally {
+      setCompressing(false);
+    }
   }
 
   const missing = taskCard
     .filter((f) => f.required && f.type !== "image" && !(answers[f.id] || "").trim())
     .map((f) => f.label);
   const missingImage = !!imageField?.required && !file;
-  const canSubmit = missing.length === 0 && !missingImage;
+  // 压缩中不能提交：提交的是还没压完的原图，会撞后端体积上限
+  const canSubmit = missing.length === 0 && !missingImage && !compressing;
 
   async function submit() {
     if (!canSubmit || busy) return;
@@ -327,19 +360,23 @@ export function SubmitForm({
           {field.type === "choice" && (
             <div className="flex flex-wrap gap-2">
               {(field.options ?? []).map((opt) => {
-                const labels: Record<string, string> = {
+                // 新生成的任务卡选项本身就是中文，直接用。
+                // 这个映射表只为兼容早期用英文 key 的历史活动；
+                // 提交时统一存中文，避免英文 key 被规则引擎拼进正文（「friends 过来的。」）。
+                const LEGACY: Record<string, string> = {
                   friends: "和朋友聚会",
                   family: "带家人",
                   solo: "一个人",
                   date: "约会",
                   colleagues: "同事聚餐",
                 };
-                const on = answers[field.id] === opt;
+                const value = LEGACY[opt] ?? opt;
+                const on = answers[field.id] === value;
                 return (
                   <button
                     key={opt}
                     type="button"
-                    onClick={() => setAnswers((a) => ({ ...a, [field.id]: opt }))}
+                    onClick={() => setAnswers((a) => ({ ...a, [field.id]: value }))}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-[13px]",
                       on
@@ -347,7 +384,7 @@ export function SubmitForm({
                         : "border-ink-200 bg-white text-ink-600",
                     )}
                   >
-                    {labels[opt] ?? opt}
+                    {value}
                   </button>
                 );
               })}
@@ -386,10 +423,27 @@ export function SubmitForm({
               <input
                 ref={fileInput}
                 type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
+                accept="image/*"
                 className="hidden"
                 onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
               />
+
+              {/* 压缩状态反馈：手机拍照常有 3–12MB，压完能小一个数量级，
+                  不告诉用户的话，他会以为自己选的还是那张大图 */}
+              {compressing && (
+                <p className="mt-2 flex items-center gap-1.5 text-[12px] text-brand-700">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  正在压缩图片…
+                </p>
+              )}
+              {!compressing && imageNote && (
+                <p className="mt-2 text-[12px] text-emerald-700">{imageNote}</p>
+              )}
+              {!compressing && !imageNote && file && (
+                <p className="mt-2 text-[12px] text-ink-500">
+                  当前大小 {formatBytes(file.size)}
+                </p>
+              )}
             </div>
           )}
 

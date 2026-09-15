@@ -43,12 +43,12 @@ export const BLUEPRINT_SYSTEM = `你是本地生活行业（餐饮、咖啡、�
   ],
   "taskCard": [
     {
-      "id": "字段英文 id，如 feeling / recommend / scene / detail / image",
+      "id": "字段 id，请优先用固定语义名：feeling / recommend / scene / detail / image",
       "label": "给老客看的问题",
       "type": "text | textarea | choice | image",
       "placeholder": "示例答案，帮老客理解要填什么",
       "why": "这个字段为什么这样设计（给商家看的说明）",
-      "options": ["仅 choice 类型需要，给英文选项 key"],
+      "options": ["仅 choice 类型需要，直接给中文选项，如「和朋友聚会」"],
       "required": true,
       "maxLength": 80
     }
@@ -60,8 +60,10 @@ export const BLUEPRINT_SYSTEM = `你是本地生活行业（餐饮、咖啡、�
 
 任务卡设计要求（非常重要）：
 - 4-5 个字段，老客 30 秒内能填完。
+- 字段 id 请**优先使用固定语义名**：feeling（真实感受）、recommend（推荐项）、scene（场景）、detail（具体细节）、image（实拍图）。
+  系统按这些 id 计算贡献值，换成别的名字会导致对应加分失效。
 - 必须包含一个 image 类型字段，要求老客传实拍图 —— 实拍图是可信度的核心。
-- 必须包含一个 choice 类型字段（如场景：朋友聚会 / 带家人 / 一个人 / 约会 / 同事聚餐），选项用英文 key。
+- 必须包含一个 choice 类型字段（场景），**选项直接写中文**，如「和朋友聚会 / 带家人 / 一个人 / 约会 / 同事聚餐」。
 - 文字类字段一律设置 maxLength，逼出「短而真」的表达。`;
 
 export function blueprintUserPrompt(input: {

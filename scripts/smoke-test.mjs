@@ -188,14 +188,13 @@ async function main() {
 
     // 逐条来源自洽性。曾经出现过：模型只给了 3 个平台，第 4 个由规则引擎补，
     // 但整批被标成 aiMode=llm —— 那条模板内容在库里被标成了「AI 写的」，标签在撒谎。
+    //
+    // 注意这里只能是**单向**蕴含（fallback ⟹ rule），不能写成双向等价：
+    // 「按设计走规则引擎」（未配 key / 种子数据）也是 rule，但 fallback=false。
     const items = submission.contents ?? [];
     check(
-      items.every(
-        (c) =>
-          (c.source === "llm" && c.fallback === false) ||
-          (c.source === "rule" && c.fallback === true),
-      ),
-      "每条内容都带自己的真实来源（source 与 fallback 自洽）",
+      items.every((c) => c.fallback !== true || c.source === "rule"),
+      "凡是被标为兜底的内容，来源必须是规则引擎",
       items.map((c) => `${c.platform}:${c.source}${c.fallback ? "(兜底)" : ""}`).join(" "),
     );
     check(
@@ -373,7 +372,84 @@ async function main() {
     fail("AI 质量面板", err.message);
   }
 
-  // ── 10. 清理测试数据 ───────────────────────────────────
+  // ── 10. 数据库约束真的在兜底吗 ─────────────────────────
+  // 并发保护不能只靠「先查后插」：两个请求会同时查到"不存在"。
+  // 这里直接尝试插入重复行，验证唯一约束真的把它挡下来。
+  // 插失败 = 符合预期 = 没有污染；万一插成功，就删掉并判失败。
+  section("10. 并发保护的数据库约束");
+  {
+    const prisma = new PrismaClient();
+    try {
+      const reward = await prisma.reward.findFirst();
+      if (!reward) {
+        ok("没有奖品样本，跳过");
+      } else {
+        try {
+          const dup = await prisma.reward.create({
+            data: {
+              campaignId: reward.campaignId,
+              contributorId: reward.contributorId,
+              tierName: reward.tierName,
+              type: reward.type,
+              title: `${reward.title}（重复插入测试）`,
+              value: reward.value,
+              code: `DUPTEST-${Date.now()}`,
+              status: "issued",
+            },
+          });
+          // 没被挡住 —— 说明约束缺失，清理并报错
+          await prisma.reward.delete({ where: { id: dup.id } });
+          fail("Reward 同档位唯一约束生效", "重复插入竟然成功了");
+        } catch (err) {
+          check(
+            err?.code === "P2002",
+            "Reward 同档位唯一约束生效（挡住重复发券）",
+            `拒绝码 ${err?.code}`,
+          );
+        }
+      }
+
+      const content = await prisma.generatedContent.findFirst();
+      if (!content) {
+        ok("没有内容样本，跳过");
+      } else {
+        const key = `fp:smoketest${Date.now()}`;
+        const make = () =>
+          prisma.trackEvent.create({
+            data: {
+              type: "click",
+              campaignId: content.campaignId,
+              submissionId: content.submissionId,
+              contentId: content.id,
+              viewerKey: key,
+              meta: JSON.stringify({ kind: "click" }),
+            },
+          });
+
+        const first = await make();
+        try {
+          await make();
+          // 第二次竟然也插进去了 → 去重失效
+          await prisma.trackEvent.deleteMany({ where: { viewerKey: key } });
+          fail("TrackEvent 同访客去重约束生效", "同一访客的重复点击竟然都入库了");
+        } catch (err) {
+          check(
+            err?.code === "P2002",
+            "TrackEvent 同访客去重约束生效（挡住脚本刷分）",
+            `拒绝码 ${err?.code}`,
+          );
+        } finally {
+          await prisma.trackEvent.deleteMany({ where: { id: first.id } });
+        }
+      }
+    } catch (err) {
+      fail("数据库约束检查", err.message);
+    } finally {
+      await prisma.$disconnect();
+    }
+  }
+
+  // ── 11. 清理测试数据 ───────────────────────────────────
   // 冒烟测试每次都会建一个活动。不清理的话，反复跑几轮就把演示列表堆满了垃圾。
   // 用固定的测试店铺名做清理锚点（cascade 会连带删掉活动/素材/内容/奖励）。
   // 设 KEEP_SMOKE_DATA=1 可以保留，方便事后翻看。

@@ -104,7 +104,8 @@ export default async function SharePage({
             </TrackedCta>
 
             <p className="hint mt-2 text-center">
-              点这个按钮会产生一次有效回流 —— 上面那位老客的贡献值会当场 +5。
+              点这个按钮会产生一次有效回流 —— 如果你是第一次从这条分享点进来，
+              上面那位老客的贡献值会 +5（同一访客只计一次，自点不计）。
             </p>
           </div>
 
