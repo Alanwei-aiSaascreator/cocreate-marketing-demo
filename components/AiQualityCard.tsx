@@ -172,6 +172,16 @@ export function AiQualityCard({ quality }: { quality: AiQuality }) {
             <span className="text-ink-400">{designPct}%</span>
           </span>
         </div>
+
+        {/* 对比版必须单独报，不能混进比例。
+            给每条内容都存一份规则引擎对比版，比例会变成假的 50/50 —— 那比不统计更误导人。 */}
+        {quality.comparisonCount > 0 && (
+          <p className="mt-2.5 text-[11px] leading-relaxed text-ink-500">
+            另有 <span className="font-semibold text-ink-700">{quality.comparisonCount}</span>{" "}
+            条规则引擎对比产出<strong className="font-medium">未计入以上比例</strong> ——
+            它们只用于在「内容库」里做同一素材的两版对比。把对比版也算进比例会让数字失真。
+          </p>
+        )}
       </div>
 
       {/* ── 降级原因：只在真的降级时才出现 ── */}

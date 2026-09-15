@@ -137,3 +137,22 @@ export interface ComposedContent {
 }
 
 export type AiMode = "llm" | "rule";
+
+/**
+ * 内容的产出引擎。
+ *
+ * 同一份素材、同一个平台**可以同时存两版**（rule 和 llm），用于在后台对比两种产出。
+ * 只有 `isPrimary` 的那一版参与内容库计数、闭环漏斗和 AI 质量比例 ——
+ * 否则给每条内容都存一份对比版，比例会变成假的 50/50，那样比不统计更误导人。
+ */
+export type ContentVariant = AiMode;
+
+export const VARIANT_LABEL: Record<ContentVariant, string> = {
+  llm: "大模型",
+  rule: "规则引擎",
+};
+
+export const VARIANT_HINT: Record<ContentVariant, string> = {
+  llm: "模型根据老客素材现场组织的表达",
+  rule: "内置模板 + 槽位填充的产出：离线可用，但不懂语义、不会组织叙事",
+};

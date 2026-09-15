@@ -1,79 +1,82 @@
 /**
- * 用**真实大模型**把种子里预生成的规则引擎内容重跑一遍。
+ * 为每份素材的每个平台建立**两版产出**：规则引擎版 + 大模型版，并决定哪一版是当前采用的。
  *
- * ── 为什么需要这个脚本 ──
- * `pnpm db:seed` 刻意用规则引擎生成内容，好处是离线可复现、不花额度、几秒跑完。
- * 但代价是：AI 质量面板会显示「大模型 0% / 规则引擎 100%」——
- * 而那恰恰是演示时最该展示的地方。这份数据是给人看的，两者冲突。
+ * ── 为什么是"建配对"而不是"重写一遍" ──
+ * 早先这个脚本是**直接覆盖**规则引擎产出的内容，那会把种子数据里的东西顶掉。
+ * 现在两份都留着：大模型版作为 primary（内容库展示的那一版），
+ * 规则引擎版作为对比版挂在同一素材下，在内容库里可以一键切换对看。
+ * **谁都不覆盖谁。**
  *
- * 所以拆开：
- *   `pnpm db:seed`   → 离线、可复现、零成本，用于开发和测试
- *   `pnpm demo:ai`   → 走真实大模型重跑内容，用于演示
+ * ── 为什么要留规则引擎版 ──
+ * 它是最好的教学材料。切过去能直接看到模板拼装的毛病：标题被硬截断、
+ * 分点撞车（推荐项和卖点重复）、偶尔出病句（「人均：人均 98 。」）。
+ * 这比口头说"AI 比模板强"有说服力得多。
  *
- * 脚本**原地更新** GeneratedContent，不删除重建 —— 因为 TrackEvent 通过 contentId
- * 关联点击回流，删了会把归因数据一起打散。这样 shareToken 和点击记录都保留。
+ * ── 关于质量面板的比例 ──
+ * 面板只统计 `isPrimary` 那一版。把对比版也算进去的话比例会变成假的 50/50 ——
+ * 那比不统计更误导人。所以对比版单独报个数。
+ *
+ * ── 关于降级的诚实性 ──
+ * 模型重试三次仍失败时，**不创建 llm 版**，而是把规则引擎版标成 `degraded=true`。
+ * 因为这时的规则产出确实是"本该走模型却失败了"的兜底，不是"按设计如此"。
+ * 不这么标的话，面板会把它误报成健康的"规则引擎（按设计）"。
  *
  * ── 用法 ──
- *   pnpm demo:ai                     处理全部素材（约 65 次模型调用，1-2 分钟）
+ *   pnpm demo:ai                     建立全部配对（约 65 次模型调用，1-2 分钟）
  *   pnpm demo:ai --limit 20          只处理前 20 条素材（试水 / 省额度）
  *   pnpm demo:ai --campaign 0        只处理第 1 个活动
  *   pnpm demo:ai --concurrency 5     并发数（默认 3，调高容易撞限流）
- *   pnpm demo:ai --no-blueprints     跳过活动框架重建（默认会重建，见下）
+ *   pnpm demo:ai --no-blueprints     跳过活动框架重建
+ *   pnpm demo:ai --no-compare        不生成规则引擎对比版（内容库里就没有切换对比）
  *
- * ── 关于活动框架重建与奖励重新结算 ──
- * 重建活动框架会换掉奖励阶梯的档位名，而已发出的 Reward 里存的是旧档位名。
- * 如果只是覆盖框架不管账本，`tiersToGrant` 会因为"档位名没见过"而**再发一轮券**。
- * 所以脚本在重建框架后会**按新阶梯重新结算该活动的福利**：
- * 先清掉该活动的 Reward，再按每位老客的累计贡献值重新发放。
- * 这样账本始终和当前阶梯一致。（Demo 数据里的券都是未核销状态，重发不影响任何人。）
- *
- * 需要保留原账本时用 `--no-blueprints` 跳过框架重建。
+ * 脚本可反复执行：已经有大模型版的素材会自动跳过，中断后重跑只补没跑完的。
  */
 import "dotenv/config";
 
 import { PrismaClient } from "@prisma/client";
 import { composeContents, generateBlueprint, llmConfig } from "../lib/ai";
+import { ruleCompose } from "../lib/ai/rules";
 import { parseJson } from "../lib/json";
 import { tiersToGrant } from "../lib/domain/reward";
+import { shareToken as newShareToken } from "../lib/ids";
 import type { Platform, PlatformFrame, RewardTier, TaskField } from "../lib/types";
 
 const prisma = new PrismaClient();
 
 // ── 参数 ──────────────────────────────────────────────────
 const argv = process.argv.slice(2);
-function flag(name: string): boolean {
-  return argv.includes(`--${name}`);
-}
+const flag = (name: string) => argv.includes(`--${name}`);
 function num(name: string, fallback: number): number {
   const hit = argv.find((a) => a.startsWith(`--${name}=`));
-  if (!hit) {
-    const idx = argv.indexOf(`--${name}`);
-    if (idx >= 0 && argv[idx + 1] && !argv[idx + 1].startsWith("--")) {
-      const v = Number(argv[idx + 1]);
-      return Number.isFinite(v) ? v : fallback;
-    }
-    return fallback;
+  if (hit) {
+    const v = Number(hit.split("=")[1]);
+    return Number.isFinite(v) ? v : fallback;
   }
-  const v = Number(hit.split("=")[1]);
-  return Number.isFinite(v) ? v : fallback;
+  const idx = argv.indexOf(`--${name}`);
+  if (idx >= 0 && argv[idx + 1] && !argv[idx + 1].startsWith("--")) {
+    const v = Number(argv[idx + 1]);
+    return Number.isFinite(v) ? v : fallback;
+  }
+  return fallback;
 }
 
 const LIMIT = num("limit", Infinity);
 const CONCURRENCY = Math.max(1, Math.min(8, num("concurrency", 3)));
 const ONLY_CAMPAIGN = argv.includes("--campaign") ? num("campaign", -1) : -1;
 const DO_BLUEPRINTS = !flag("no-blueprints");
+const DO_COMPARE = !flag("no-compare");
 const MAX_RETRY = num("retry", 2);
 
 // ── 小工具 ────────────────────────────────────────────────
 
-const started = Date.now();
+const startedAt = Date.now();
 function elapsed(): string {
-  const s = Math.round((Date.now() - started) / 1000);
+  const s = Math.round((Date.now() - startedAt) / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
 }
 
-/** 极简并发池：LLM 调用是 IO 密集，串行跑 184 次要二十多分钟 */
-async function pool<T, R>(items: T[], size: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+/** 极简并发池：LLM 调用是 IO 密集，串行跑 65 次要十几分钟 */
+async function pool<T, R>(items: T[], size: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
   await Promise.all(
@@ -81,20 +84,11 @@ async function pool<T, R>(items: T[], size: number, worker: (item: T, index: num
       for (;;) {
         const i = cursor++;
         if (i >= items.length) return;
-        results[i] = await worker(items[i], i);
+        results[i] = await worker(items[i]);
       }
     }),
   );
   return results;
-}
-
-interface JobResult {
-  submissionId: string;
-  ok: boolean;
-  aiMode: "llm" | "rule";
-  degraded: boolean;
-  updated: number;
-  note: string;
 }
 
 /**
@@ -135,6 +129,31 @@ async function resettleRewards(campaignId: string, tiers: RewardTier[]): Promise
   return count;
 }
 
+interface MerchantLike {
+  name: string;
+  category: string;
+  city: string;
+  address: string | null;
+  avgPrice: number | null;
+  tones: string[];
+  sellingPoints: string[];
+  bannedWords: string[];
+}
+
+interface JobResult {
+  /** 本次拿到了新的模型产出 */
+  composed: boolean;
+  /** 本来就有可用的大模型版，本次只补了对比版 */
+  reusedLlm: boolean;
+  /** 真的失败了（模型调不通、且手里没有可用的大模型版） */
+  failed: boolean;
+  /** 本次新建/更新的 llm 内容条数 */
+  llmWritten: number;
+  /** 本次补建的规则引擎对比版条数 */
+  compareBuilt: number;
+  note: string;
+}
+
 // ── 主流程 ────────────────────────────────────────────────
 
 async function main() {
@@ -143,27 +162,27 @@ async function main() {
     console.error(`
   ✗ 模型未启用，这个脚本跑不出大模型内容。
     当前 LLM_MODE=${cfg.mode}，LLM_API_KEY ${cfg.apiKey ? "已配置" : "为空"}。
-    请在 .env 里填好 LLM_API_KEY 后重试（只想离线跑就用 pnpm db:seed 即可）。
+    只想离线跑用 pnpm db:seed 即可。
 `);
     process.exit(1);
   }
 
   console.log(`
-\x1b[1m用真实大模型重跑种子内容\x1b[0m
+\x1b[1m为素材建立「大模型版 + 规则引擎对比版」\x1b[0m
   模型        ${cfg.model}
-  并发        ${CONCURRENCY}
-  重试        ${MAX_RETRY} 次
+  并发        ${CONCURRENCY}     重试 ${MAX_RETRY} 次
   范围        ${ONLY_CAMPAIGN >= 0 ? `只处理第 ${ONLY_CAMPAIGN + 1} 个活动` : "全部活动"}${LIMIT !== Infinity ? `，最多 ${LIMIT} 条素材` : ""}
-  重建框架    ${DO_BLUEPRINTS ? "是（含按新阶梯重新结算福利）" : "否（--no-blueprints）"}
+  重建框架    ${DO_BLUEPRINTS ? "是（含按新阶梯重新结算福利）" : "否"}
+  对比版      ${DO_COMPARE ? "生成（内容库里可切换对看）" : "不生成"}
 `);
 
   const campaigns = await prisma.campaign.findMany({
     include: {
       merchant: true,
       submissions: {
-      orderBy: { createdAt: "asc" },
-      include: { contents: { select: { aiMode: true, degraded: true } } },
-    },
+        orderBy: { createdAt: "asc" },
+        include: { contents: { select: { variant: true, degraded: true, platform: true } } },
+      },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -175,24 +194,22 @@ async function main() {
     for (let i = 0; i < campaigns.length; i++) {
       if (ONLY_CAMPAIGN >= 0 && i !== ONLY_CAMPAIGN) continue;
       const c = campaigns[i];
-      const bp = await generateBlueprint(
-        {
-          name: c.merchant.name,
-          category: c.merchant.category,
-          city: c.merchant.city,
-          address: c.merchant.address,
-          avgPrice: c.merchant.avgPrice,
-          tones: parseJson<string[]>(c.merchant.tones, []),
-          sellingPoints: parseJson<string[]>(c.merchant.sellingPoints, []),
-          bannedWords: parseJson<string[]>(c.merchant.bannedWords, []),
-        },
-        {
-          title: c.title,
-          objective: c.objective,
-          platforms: parseJson<Platform[]>(c.platforms, []),
-          brief: c.brief,
-        },
-      );
+      const merchantLike: MerchantLike = {
+        name: c.merchant.name,
+        category: c.merchant.category,
+        city: c.merchant.city,
+        address: c.merchant.address,
+        avgPrice: c.merchant.avgPrice,
+        tones: parseJson<string[]>(c.merchant.tones, []),
+        sellingPoints: parseJson<string[]>(c.merchant.sellingPoints, []),
+        bannedWords: parseJson<string[]>(c.merchant.bannedWords, []),
+      };
+      const bp = await generateBlueprint(merchantLike, {
+        title: c.title,
+        objective: c.objective,
+        platforms: parseJson<Platform[]>(c.platforms, []),
+        brief: c.brief,
+      });
       await prisma.campaign.update({
         where: { id: c.id },
         data: {
@@ -204,28 +221,33 @@ async function main() {
           degraded: bp.degraded,
         },
       });
-
-      // 关键：档位名换了，账本必须跟着重算，否则旧档位名的券会成为孤儿，
-      // 而新档位名会被当成"没发过"再发一轮。
-      const reissuedHere = await resettleRewards(c.id, bp.rewardTiers);
-      reissued += reissuedHere;
-
-      console.log(
-        `  ${c.merchant.name.padEnd(16)} ${bp.aiMode}${bp.degraded ? " · 降级" : ""}  阶梯 ${bp.rewardTiers.map((t) => t.threshold).join("/")}  重发福利 ${reissuedHere} 张`,
-      );
+      const n = await resettleRewards(c.id, bp.rewardTiers);
+      reissued += n;
+      console.log(`  ${c.merchant.name.padEnd(16)} ${bp.aiMode}${bp.degraded ? " · 降级" : ""}  阶梯 ${bp.rewardTiers.map((t) => t.threshold).join("/")}  福利 ${n} 张`);
     }
     console.log(`  福利重新结算合计 ${reissued} 张\n`);
   }
 
   // ── 收集待处理的素材 ──
-  // 跳过已经是大模型产出的：让脚本可以反复执行 —— 中断后重跑只补没跑完的，不浪费额度。
-  const jobs: { campaign: (typeof campaigns)[number]; submissionId: string; answers: Record<string, string>; hasImage: boolean }[] = [];
+  // 跳过已经有大模型版且未降级的：可反复执行，中断后重跑只补没跑完的。
+  type Job = {
+    campaign: (typeof campaigns)[number];
+    submissionId: string;
+    answers: Record<string, string>;
+    hasImage: boolean;
+    hasLlm: boolean;
+  };
+  const jobs: Job[] = [];
   let skipped = 0;
   for (let i = 0; i < campaigns.length; i++) {
     if (ONLY_CAMPAIGN >= 0 && i !== ONLY_CAMPAIGN) continue;
     for (const s of campaigns[i].submissions) {
-      if (s.status === "rejected") continue; // 被拦下的素材本来就没有内容
-      if (s.contents.length > 0 && s.contents.every((c) => c.aiMode === "llm" && !c.degraded)) {
+      if (s.status === "rejected") continue;
+      const llmRows = s.contents.filter((c) => c.variant === "llm" && !c.degraded);
+      const hasLlm = llmRows.length > 0 && llmRows.length === s.contents.filter((c) => c.variant === "llm").length;
+      // 有大模型版、且对比版也齐了，才真正跳过
+      const compareNeeded = DO_COMPARE && s.contents.filter((c) => c.variant === "rule").length === 0;
+      if (hasLlm && !compareNeeded) {
         skipped++;
         continue;
       }
@@ -234,27 +256,29 @@ async function main() {
         submissionId: s.id,
         answers: parseJson<Record<string, string>>(s.answers, {}),
         hasImage: !!s.imageUrl,
+        hasLlm,
       });
     }
   }
 
   const targets = jobs.slice(0, LIMIT === Infinity ? jobs.length : LIMIT);
-  if (skipped > 0) console.log(`已是大模型产出、跳过 ${skipped} 条素材（可反复执行，只补没跑完的）`);
-  console.log(`待处理素材 ${targets.length} 条（每条 ${"约 1 次"}模型调用，每次约 5-9 秒）`);
+  if (skipped > 0) console.log(`已完成、跳过 ${skipped} 条素材`);
+  console.log(`待处理素材 ${targets.length} 条`);
   console.log(`按并发 ${CONCURRENCY} 估算，大约需要 ${Math.ceil((targets.length * 7) / CONCURRENCY / 60)} 分钟。\n`);
+
   if (targets.length === 0) {
-    console.log("  没有需要处理的素材 —— 所有内容都已经是大模型产出的了。\n");
+    console.log("  没有需要处理的素材。\n");
     await prisma.$disconnect();
     return;
   }
 
   let done = 0;
-  const results = await pool(targets, CONCURRENCY, async (job): Promise<JobResult> => {
+  const results = await pool<Job, JobResult>(targets, CONCURRENCY, async (job) => {
     const frames = parseJson<PlatformFrame[]>(job.campaign.frames, []);
     const platforms = parseJson<Platform[]>(job.campaign.platforms, []);
     const taskCard = parseJson<TaskField[]>(job.campaign.taskCard, []);
 
-    const merchantLike = {
+    const merchantLike: MerchantLike = {
       name: job.campaign.merchant.name,
       category: job.campaign.merchant.category,
       city: job.campaign.merchant.city,
@@ -271,10 +295,52 @@ async function main() {
       brief: job.campaign.brief,
     };
 
-    // 失败重试：184 次调用里有一两次网络抖动很正常，不该因此把整批算成降级
+    // ── 第 1 步：确保规则引擎对比版存在（本地生成，零 API 成本）──
+    let compareBuilt = 0;
+    if (DO_COMPARE) {
+      for (const frame of frames) {
+        const existing = await prisma.generatedContent.findUnique({
+          where: {
+            submissionId_platform_variant: {
+              submissionId: job.submissionId,
+              platform: frame.platform,
+              variant: "rule",
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
+        const c = ruleCompose(merchantLike, campaignLike, { id: job.submissionId, answers: job.answers }, frame.platform);
+        await prisma.generatedContent.create({
+          data: {
+            campaignId: job.campaign.id,
+            submissionId: job.submissionId,
+            platform: c.platform,
+            title: c.title,
+            body: c.body,
+            tags: JSON.stringify(c.tags),
+            coverHint: c.coverHint,
+            complianceNote: c.complianceNote,
+            aiMode: "rule",
+            variant: "rule",
+            // 先建为非 primary，最后统一决定谁是 primary
+            isPrimary: false,
+            degraded: false,
+            aiNote: "规则引擎对比产出（同一素材的另一版，用于对比），非降级。",
+            shareToken: newShareToken(),
+          },
+        });
+        compareBuilt++;
+      }
+    }
+
+    // ── 第 2 步：调模型拿大模型版 ──
+    // 已经有可用的 llm 版就跳过调用 —— 否则光是为了补对比版，
+    // 又会把 65 次模型调用重跑一遍，白花额度。
     let composed = null;
     let lastErr = "";
-    for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    for (let attempt = 0; !job.hasLlm && attempt <= MAX_RETRY; attempt++) {
       try {
         const r = await composeContents(
           merchantLike,
@@ -283,7 +349,6 @@ async function main() {
           frames,
           job.hasImage ? "老客已提供一张实拍图，封面建议请基于这张图来写。" : "老客未提供实拍图。",
         );
-        // 只有真拿到模型产出才算成功；降级结果不当成功，触发重试
         if (r.aiMode === "llm" && !r.degraded) {
           composed = r;
           break;
@@ -295,93 +360,131 @@ async function main() {
       if (attempt < MAX_RETRY) await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
     }
 
-    if (!composed) {
-      // 三次都失败：保留原有内容，并**如实标成降级** —— 不能把规则产出的内容标成大模型产出的
-      await prisma.generatedContent.updateMany({
-        where: { submissionId: job.submissionId },
-        data: { degraded: true, aiNote: `模型重跑失败，保留原有规则产出。原因：${lastErr.slice(0, 160)}` },
-      });
-      done++;
-      process.stdout.write(`\r  进度 ${done}/${targets.length}  失败/降级 ${lastErr.slice(0, 40)}`.padEnd(90));
-      return { submissionId: job.submissionId, ok: false, aiMode: "rule", degraded: true, updated: 0, note: lastErr };
-    }
+    let llmWritten = 0;
 
-    // 原地更新，不删重建 —— 保住 contentId，从而保住点击回流的归因
-    const existing = await prisma.generatedContent.findMany({
-      where: { submissionId: job.submissionId },
-      select: { id: true, platform: true },
-    });
-    const byPlatform = new Map(existing.map((e) => [e.platform, e.id]));
-    let updated = 0;
-
-    // 任务卡里标了 required 的字段，用来判断这条素材算不算完整（这里只用于展示，不重复计分）
-    void taskCard;
-
-    for (const item of composed.contents) {
-      const id = byPlatform.get(item.platform);
-      const data = {
-        title: item.title,
-        body: item.body,
-        tags: JSON.stringify(item.tags),
-        coverHint: item.coverHint,
-        complianceNote: item.complianceNote,
-        aiMode: item.source,
-        degraded: item.fallback,
-        aiNote: composed.note,
-      };
-      if (id) {
-        await prisma.generatedContent.update({ where: { id }, data });
-      } else {
-        // 模型给出了任务卡里没覆盖的平台，补一条（shareToken 新生成）
-        const { shareToken } = await import("../lib/ids");
-        await prisma.generatedContent.create({
-          data: {
-            campaignId: job.campaign.id,
+    if (composed) {
+      // upsert：已存在就更新文本，不存在才新建 —— 保住 contentId，从而保住点击回流的归因
+      for (const item of composed.contents) {
+        const where = {
+          submissionId_platform_variant: {
             submissionId: job.submissionId,
             platform: item.platform,
-            shareToken: shareToken(),
-            ...data,
+            variant: "llm" as const,
           },
-        });
+        };
+        const data = {
+          title: item.title,
+          body: item.body,
+          tags: JSON.stringify(item.tags),
+          coverHint: item.coverHint,
+          complianceNote: item.complianceNote,
+          aiMode: "llm",
+          degraded: false,
+          aiNote: composed.note,
+        };
+        const existing = await prisma.generatedContent.findUnique({ where, select: { id: true } });
+        if (existing) {
+          await prisma.generatedContent.update({ where, data });
+        } else {
+          await prisma.generatedContent.create({
+            data: {
+              campaignId: job.campaign.id,
+              submissionId: job.submissionId,
+              platform: item.platform,
+              variant: "llm",
+              isPrimary: false,
+              shareToken: newShareToken(),
+              ...data,
+            },
+          });
+        }
+        llmWritten++;
       }
-      updated++;
+    } else if (DO_COMPARE && !job.hasLlm) {
+      // 三次都失败：没有 llm 版可展示，规则引擎版顶上。
+      // 但这时它是**兜底**而不是"按设计如此"，必须如实标降级 ——
+      // 否则面板会把它误报成健康的「规则引擎（按设计）」。
+      await prisma.generatedContent.updateMany({
+        where: { submissionId: job.submissionId, variant: "rule" },
+        data: {
+          degraded: true,
+          aiNote: `模型生成失败，改用规则引擎兜底。原因：${lastErr.slice(0, 160)}`,
+        },
+      });
     }
 
+    // ── 第 3 步：决定哪个平台用哪版作为 primary ──
+    const rows = await prisma.generatedContent.findMany({
+      where: { submissionId: job.submissionId },
+      select: { id: true, platform: true, variant: true, degraded: true },
+    });
+    for (const platform of platforms) {
+      const pair = rows.filter((r) => r.platform === platform);
+      if (pair.length === 0) continue;
+      const llm = pair.find((r) => r.variant === "llm" && !r.degraded);
+      const pick = llm ?? pair.find((r) => r.variant === "rule") ?? pair[0];
+      await prisma.generatedContent.updateMany({
+        where: { submissionId: job.submissionId, platform },
+        data: { isPrimary: false },
+      });
+      await prisma.generatedContent.update({ where: { id: pick.id }, data: { isPrimary: true } });
+    }
+
+    void taskCard;
     done++;
-    process.stdout.write(`\r  进度 ${done}/${targets.length}  已更新 ${updated} 条内容`.padEnd(90));
-    return { submissionId: job.submissionId, ok: true, aiMode: composed.aiMode, degraded: composed.degraded, updated, note: composed.note };
+    process.stdout.write(
+      `\r  进度 ${done}/${targets.length}  llm ${llmWritten} 条  对比版 +${compareBuilt} 条`.padEnd(88),
+    );
+
+    return {
+      composed: !!composed,
+      reusedLlm: !composed && job.hasLlm,
+      failed: !composed && !job.hasLlm,
+      llmWritten,
+      compareBuilt,
+      note: composed ? composed.note : lastErr,
+    };
   });
 
   console.log("\n");
 
   // ── 汇总 ──
-  const okCount = results.filter((r) => r.ok).length;
-  const failCount = results.length - okCount;
-  const contentUpdated = results.reduce((s, r) => s + r.updated, 0);
+  // 三种情况必须分开报：真写了模型产出 / 复用了已有的 / 真失败了。
+  // 混成一个"成功/失败"会让「本来就有 llm 版、只补了对比版」被误报成失败 ——
+  // 那种汇总本身就是在误导人。
+  const composedCount = results.filter((r) => r.composed).length;
+  const reusedCount = results.filter((r) => r.reusedLlm).length;
+  const failCount = results.filter((r) => r.failed).length;
 
-  const all = await prisma.generatedContent.findMany({ select: { aiMode: true, degraded: true } });
-  const llm = all.filter((c) => c.aiMode === "llm").length;
-  const degraded = all.filter((c) => c.degraded).length;
-  const byDesign = all.length - llm - degraded;
-  const rate = (n: number) => `${((n / (all.length || 1)) * 100).toFixed(1)}%`;
+  const primary = await prisma.generatedContent.findMany({
+    where: { isPrimary: true },
+    select: { aiMode: true, degraded: true },
+  });
+  const comparison = await prisma.generatedContent.count({ where: { isPrimary: false } });
+  const llm = primary.filter((c) => c.aiMode === "llm").length;
+  const degraded = primary.filter((c) => c.degraded).length;
+  const byDesign = primary.length - llm - degraded;
+  const rate = (n: number) => `${((n / (primary.length || 1)) * 100).toFixed(1)}%`;
 
   console.log(`──────────────────────────────────────────────────`);
   console.log(`  完成，用时 ${elapsed()}`);
   console.log(`──────────────────────────────────────────────────`);
-  console.log(`  处理素材        ${results.length} 条（成功 ${okCount}、失败 ${failCount}）`);
-  console.log(`  更新内容        ${contentUpdated} 条`);
+  console.log(`  处理素材        ${results.length} 条`);
+  console.log(`    · 本次生成大模型版    ${composedCount} 条（写入内容 ${results.reduce((s, r) => s + r.llmWritten, 0)} 条）`);
+  console.log(`    · 已有大模型版、仅补对比版 ${reusedCount} 条`);
+  console.log(`    · 真失败（模型调不通）    ${failCount} 条${failCount > 0 ? "   ← 已如实标为降级" : ""}`);
+  console.log(`  补建对比版      ${results.reduce((s, r) => s + r.compareBuilt, 0)} 条`);
   console.log("");
-  console.log(`  全库内容构成（这就是后台「AI 生成质量」面板上的数字）`);
+  console.log(`  当前采用的那一版（= 后台质量面板统计的口径）`);
   console.log(`    大模型          ${String(llm).padStart(4)}  ${rate(llm)}`);
   console.log(`    降级            ${String(degraded).padStart(4)}  ${rate(degraded)}${degraded > 0 ? "   ← 需要关注" : ""}`);
   console.log(`    规则引擎(按设计) ${String(byDesign).padStart(4)}  ${rate(byDesign)}`);
-  console.log(`    合计            ${String(all.length).padStart(4)}`);
+  console.log(`    合计            ${String(primary.length).padStart(4)}`);
   console.log("");
-  if (degraded === 0 && llm > 0) {
-    console.log(`  ✓ 面板会显示「健康 · 零降级」`);
-  } else if (degraded > 0) {
-    console.log(`  ⚠ 有 ${degraded} 条降级，面板会给出对应提示 —— 这是如实反映，不是 bug`);
-  }
+  console.log(`  对比版（不计入比例，仅用于内容库里切换对看）  ${comparison} 条`);
+  console.log("");
+  if (degraded === 0 && llm > 0) console.log(`  ✓ 面板会显示「健康 · 零降级」`);
+  else if (degraded > 0) console.log(`  ⚠ 有 ${degraded} 条降级，面板会给出对应提示 —— 这是如实反映，不是 bug`);
   console.log("");
 }
 

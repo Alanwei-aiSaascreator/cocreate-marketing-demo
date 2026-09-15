@@ -144,6 +144,15 @@ model GeneratedContent {
   complianceNote String @default("")
   /// llm | rule
   aiMode String @default("rule")
+  /// 这一行是哪个引擎产出的：llm | rule。
+  /// 同一份素材、同一个平台**可以同时存两版**，用于在后台对比两种产出。
+  variant String @default("llm")
+  /// 是否是「当前采用/展示」的那一版。
+  ///
+  /// 为什么必须区分：AI 质量面板只能统计 primary，否则给每条内容都存一份对比版，
+  /// 比例会变成假的 50/50 —— 那比不统计更误导人。
+  /// 对比版不进内容库计数、不进漏斗、不参与质量比例。
+  isPrimary Boolean @default(true)
   /// 本次生成的真实降级：**只有「本该走模型却失败了」才为 true**。
   /// 种子数据、未配置 key 走规则引擎都不算降级 —— 不区分这两者，比例数字就会骗人。
   degraded Boolean @default(false)
@@ -153,7 +162,8 @@ model GeneratedContent {
   adopted   Boolean   @default(false)
   adoptedAt DateTime?
 
-  /// 内容短码，用于生成可追踪的分享链接（引流归因）
+  /// 内容短码，用于生成可追踪的分享链接（引流归因）。
+  /// 两个版本各自持有独立的 token —— 于是可以把两种产出都分享出去做真实对比。
   shareToken String @unique
 
   createdAt DateTime @default(now())
@@ -162,6 +172,9 @@ model GeneratedContent {
 
   @@index([campaignId])
   @@index([submissionId])
+  @@index([campaignId, isPrimary])
+  /// 同一素材 + 同一平台 + 同一引擎只能有一条
+  @@unique([submissionId, platform, variant])
 }
 
 /// 贡献记录：分值必须可拆解、可解释，而不是一个黑盒数字

@@ -359,6 +359,10 @@ async function main() {
             coverHint: composed.coverHint,
             complianceNote: composed.complianceNote,
             aiMode: "rule",
+            // 种子只有规则引擎这一版，所以它同时是 primary。
+            // 大模型版由 `pnpm demo:ai` 另外补成对比版，两版共存、谁都不覆盖谁。
+            variant: "rule",
+            isPrimary: true,
             degraded: false,
             aiNote: "种子数据用规则引擎生成（离线可复现），非降级。",
             adopted: s.adopted,

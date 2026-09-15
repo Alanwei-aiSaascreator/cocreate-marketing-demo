@@ -7,6 +7,7 @@ import { parseJson } from "./json";
 import { viewerToken as newViewerToken } from "./ids";
 import { llmConfig } from "./ai/deepseek";
 import type {
+  ContentVariant,
   Platform,
   PlatformFrame,
   PointItem,
@@ -103,6 +104,21 @@ export interface DecodedSubmission {
   adoptedCount: number;
 }
 
+/** 另一版产出的摘要，用于在内容库里当场对比 */
+export interface CompareVariant {
+  id: string;
+  variant: ContentVariant;
+  title: string;
+  body: string;
+  tags: string[];
+  coverHint: string;
+  complianceNote: string;
+  aiMode: string;
+  degraded: boolean;
+  aiNote: string;
+  shareToken: string;
+}
+
 export interface DecodedContent {
   id: string;
   platform: Platform;
@@ -114,6 +130,7 @@ export interface DecodedContent {
   aiMode: string;
   aiNote: string;
   degraded: boolean;
+  variant: ContentVariant;
   adopted: boolean;
   shareToken: string;
   createdAt: Date;
@@ -121,6 +138,8 @@ export interface DecodedContent {
   contributor: { id: string; nickname: string; avatarEmoji: string };
   answers: Record<string, string>;
   imageUrl: string | null;
+  /** 同一素材同一平台另一版产出（没有就是 null） */
+  compare: CompareVariant | null;
 }
 
 export interface DecodedContribution {
@@ -180,6 +199,11 @@ export interface AiQuality {
   degradedRate: number;
   /** 降级原因分布 */
   reasons: { note: string; count: number }[];
+  /**
+   * 未计入统计的对比版数量（同一素材同一平台的另一版产出）。
+   * 不算进比例是有意的：把对比版也算进去，比例会变成假的 50/50。
+   */
+  comparisonCount: number;
   /** 是否配置了模型 key。没配的话「降级」这个指标无意义 */
   llmConfigured: boolean;
   model: string;
@@ -298,29 +322,59 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     };
   });
 
-  const contents: DecodedContent[] = row.contents.map((c) => ({
-    id: c.id,
-    platform: c.platform as Platform,
-    title: c.title,
-    body: c.body,
-    tags: parseJson<string[]>(c.tags, []),
-    coverHint: c.coverHint,
-    complianceNote: c.complianceNote,
-    aiMode: c.aiMode,
-    aiNote: c.aiNote,
-    degraded: c.degraded,
-    adopted: c.adopted,
-    shareToken: c.shareToken,
-    createdAt: c.createdAt,
-    submissionId: c.submissionId,
-    contributor: {
-      id: c.submission.contributor.id,
-      nickname: c.submission.contributor.nickname,
-      avatarEmoji: c.submission.contributor.avatarEmoji,
-    },
-    answers: parseJson<Record<string, string>>(c.submission.answers, {}),
-    imageUrl: c.submission.imageUrl,
-  }));
+  // 同一素材同一平台可能存了两版（llm / rule）。
+  // 内容库、漏斗、质量比例**只统计 primary**，另一版挂到 `compare` 上供当场对比 ——
+  // 把两版都算进去的话，比例会变成假的 50/50，比不统计更误导人。
+  const allContents = row.contents;
+  const primaryRows = allContents.filter((c) => c.isPrimary);
+  const siblingOf = new Map<string, (typeof allContents)[number]>();
+  for (const c of allContents) {
+    if (c.isPrimary) continue;
+    siblingOf.set(`${c.submissionId}:${c.platform}`, c);
+  }
+
+  const contents: DecodedContent[] = primaryRows.map((c) => {
+    const sibling = siblingOf.get(`${c.submissionId}:${c.platform}`);
+    return {
+      id: c.id,
+      platform: c.platform as Platform,
+      title: c.title,
+      body: c.body,
+      tags: parseJson<string[]>(c.tags, []),
+      coverHint: c.coverHint,
+      complianceNote: c.complianceNote,
+      aiMode: c.aiMode,
+      aiNote: c.aiNote,
+      degraded: c.degraded,
+      variant: (c.variant === "rule" ? "rule" : "llm") as ContentVariant,
+      adopted: c.adopted,
+      shareToken: c.shareToken,
+      createdAt: c.createdAt,
+      submissionId: c.submissionId,
+      contributor: {
+        id: c.submission.contributor.id,
+        nickname: c.submission.contributor.nickname,
+        avatarEmoji: c.submission.contributor.avatarEmoji,
+      },
+      answers: parseJson<Record<string, string>>(c.submission.answers, {}),
+      imageUrl: c.submission.imageUrl,
+      compare: sibling
+        ? {
+            id: sibling.id,
+            variant: (sibling.variant === "rule" ? "rule" : "llm") as ContentVariant,
+            title: sibling.title,
+            body: sibling.body,
+            tags: parseJson<string[]>(sibling.tags, []),
+            coverHint: sibling.coverHint,
+            complianceNote: sibling.complianceNote,
+            aiMode: sibling.aiMode,
+            degraded: sibling.degraded,
+            aiNote: sibling.aiNote,
+            shareToken: sibling.shareToken,
+          }
+        : null,
+    };
+  });
 
   const contributions: DecodedContribution[] = row.contributions.map((c) => ({
     id: c.id,
@@ -420,6 +474,10 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
   // 比例分母用三者之和，保证进度条宽度恰好铺满
   const partsTotal = llmCount + degradedContents.length + byDesignCount || 1;
 
+  // `contents` 此时只含 primary，所以这里统计的天然就是「当前采用的那一版」。
+  // 对比版单独报个数，让商家知道库里还有多少条没计入 —— 而不是把它们混进比例里。
+  const comparisonCount = allContents.length - primaryRows.length;
+
   const aiQuality: AiQuality = {
     total: contents.length,
     llm: llmCount,
@@ -430,6 +488,7 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     reasons: Array.from(reasonMap.entries())
       .map(([note, count]) => ({ note, count }))
       .sort((a, b) => b.count - a.count),
+    comparisonCount,
     llmConfigured: cfg.enabled,
     model: cfg.model,
     blueprint: {
@@ -573,7 +632,8 @@ export async function getContributorDashboard(
   const [submissions, contributions, rewards, agg, globalAgg] = await Promise.all([
     prisma.submission.findMany({
       where: { campaignId, contributorId },
-      include: { contents: true },
+      // 只给老客看 primary 那一版：否则 4 个平台会显示成 8 条，把老客搞糊涂
+      include: { contents: { where: { isPrimary: true } } },
       orderBy: { createdAt: "desc" },
     }),
     prisma.contribution.findMany({
