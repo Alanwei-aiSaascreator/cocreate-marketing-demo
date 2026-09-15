@@ -259,4 +259,9 @@ pnpm db:seed       # 载入演示数据（离线可复现）
 pnpm db:reset      # 重置数据库 + 重新载入
 pnpm setup         # generate + push + seed 一条龙
 node scripts/smoke-test.mjs   # 端到端冒烟测试（需先 pnpm dev）
+npx tsx scripts/compare-engines.ts   # 同一份老客素材，规则引擎 vs 大模型产出并排对比
 ```
+
+> `compare-engines.ts` 是理解本项目 AI 层最直观的方式：两个引擎吃同一份输入、
+> 吐同一个结构，差别只在内容质量。强制走大模型（`LLM_MODE=llm`），
+> 模型有问题会直接报错而不是悄悄降级。
