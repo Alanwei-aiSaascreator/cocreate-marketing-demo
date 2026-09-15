@@ -56,6 +56,8 @@ model Campaign {
   /// llm = 走了真模型；rule = 走了降级规则引擎
   aiMode   String @default("rule")
   aiNote   String @default("")
+  /// 同上：只有「本该走模型却失败」才算降级
+  degraded Boolean @default(false)
 
   status String @default("active") // draft | active | closed
   /// 免登录 H5 入口短码，扫码/分享都用它
@@ -142,8 +144,13 @@ model GeneratedContent {
   coverHint String @default("")
   /// 合规自检提示
   complianceNote String @default("")
-  /// llm | rule —— 演示时可直接展示降级是否生效
+  /// llm | rule
   aiMode String @default("rule")
+  /// 本次生成的真实降级：**只有「本该走模型却失败了」才为 true**。
+  /// 种子数据、未配置 key 走规则引擎都不算降级 —— 不区分这两者，比例数字就会骗人。
+  degraded Boolean @default(false)
+  /// 生成说明：走了哪条路、为什么、丢弃了什么。用于聚合出降级原因分布。
+  aiNote String @default("")
 
   adopted   Boolean   @default(false)
   adoptedAt DateTime?

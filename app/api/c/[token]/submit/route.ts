@@ -248,6 +248,8 @@ export async function POST(
         coverHint: item.coverHint,
         complianceNote: item.complianceNote,
         aiMode: composed.aiMode,
+        degraded: composed.degraded,
+        aiNote: composed.note,
         shareToken: shareToken(),
       },
     });
@@ -289,6 +291,7 @@ export async function POST(
     breakdown: score.breakdown,
     riskFlags,
     aiMode: composed.aiMode,
+    degraded: composed.degraded,
     aiNote: composed.note,
     contents: contents.map((c) => ({
       id: c.id,

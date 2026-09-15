@@ -5,6 +5,7 @@
 import { prisma } from "./db";
 import { parseJson } from "./json";
 import { viewerToken as newViewerToken } from "./ids";
+import { llmConfig } from "./ai/deepseek";
 import type {
   Platform,
   PlatformFrame,
@@ -38,6 +39,7 @@ export interface DecodedCampaign {
   rewardTiers: RewardTier[];
   aiMode: string;
   aiNote: string;
+  degraded: boolean;
   status: string;
   publicToken: string;
   createdAt: Date;
@@ -74,6 +76,7 @@ function decodeCampaign(c: {
   rewardTiers: string;
   aiMode: string;
   aiNote: string;
+  degraded: boolean;
   status: string;
   publicToken: string;
   createdAt: Date;
@@ -109,6 +112,8 @@ export interface DecodedContent {
   coverHint: string;
   complianceNote: string;
   aiMode: string;
+  aiNote: string;
+  degraded: boolean;
   adopted: boolean;
   shareToken: string;
   createdAt: Date;
@@ -152,8 +157,37 @@ export interface LeaderboardRow {
   rewards: number;
 }
 
-export interface WorkspaceMetrics {
-  submissions: number;
+/**
+ * AI 生成质量指标。
+ *
+ * 单条标注（这条内容是 llm 还是 rule）只能事后追查；
+ * **比例才能让人一眼判断模型现在健不健康**，这才是运维要盯的数字。
+ *
+ * 关键点：`degraded` 必须和「按设计走规则引擎」严格分开。
+ * 否则演示数据（种子刻意用规则引擎）会显示成 100% 规则引擎，
+ * 看着像全线故障，其实一切正常 —— 那样这个指标反而在骗人。
+ */
+export interface AiQuality {
+  total: number;
+  llm: number;
+  /** 按设计走规则引擎：未配置 key 或种子数据，不是故障 */
+  ruleByDesign: number;
+  /** 真实降级：已配置 key，本该走模型却失败退回 */
+  degraded: number;
+  /** 大模型产出占比（0~1） */
+  llmRate: number;
+  /** 真实降级率（0~1）—— 这是要盯的那个数 */
+  degradedRate: number;
+  /** 降级原因分布 */
+  reasons: { note: string; count: number }[];
+  /** 是否配置了模型 key。没配的话「降级」这个指标无意义 */
+  llmConfigured: boolean;
+  model: string;
+  /** 活动框架（平台框架/任务卡/奖励阶梯）的生成情况 */
+  blueprint: { aiMode: string; degraded: boolean; note: string };
+}
+
+export interface WorkspaceMetrics {  submissions: number;
   blocked: number;
   warned: number;
   contents: number;
@@ -175,6 +209,7 @@ export interface Workspace {
   rewards: DecodedReward[];
   leaderboard: LeaderboardRow[];
   metrics: WorkspaceMetrics;
+  aiQuality: AiQuality;
 }
 
 // ── 商家侧 ────────────────────────────────────────────────
@@ -272,6 +307,8 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     coverHint: c.coverHint,
     complianceNote: c.complianceNote,
     aiMode: c.aiMode,
+    aiNote: c.aiNote,
+    degraded: c.degraded,
     adopted: c.adopted,
     shareToken: c.shareToken,
     createdAt: c.createdAt,
@@ -353,8 +390,7 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
   }
   const leaderboard = Array.from(boardMap.values()).sort((a, b) => b.points - a.points);
 
-  const metrics: WorkspaceMetrics = {
-    submissions: submissions.length,
+  const metrics: WorkspaceMetrics = {    submissions: submissions.length,
     blocked: submissions.filter((s) => s.status === "rejected").length,
     warned: submissions.filter((s) => s.status !== "rejected" && s.riskFlags.length > 0).length,
     contents: contents.length,
@@ -367,6 +403,35 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     pointsIssued: contributions.reduce((sum, c) => sum + c.points, 0),
   };
 
+  // AI 生成质量：把「大模型 / 按设计的规则引擎 / 真实降级」三者严格分开统计
+  const cfg = llmConfig();
+  const llmCount = contents.filter((c) => c.aiMode === "llm").length;
+  const degradedContents = contents.filter((c) => c.degraded);
+  const reasonMap = new Map<string, number>();
+  for (const c of degradedContents) {
+    const key = c.aiNote || "（未记录原因）";
+    reasonMap.set(key, (reasonMap.get(key) ?? 0) + 1);
+  }
+
+  const aiQuality: AiQuality = {
+    total: contents.length,
+    llm: llmCount,
+    ruleByDesign: contents.length - llmCount - degradedContents.length,
+    degraded: degradedContents.length,
+    llmRate: contents.length > 0 ? llmCount / contents.length : 0,
+    degradedRate: contents.length > 0 ? degradedContents.length / contents.length : 0,
+    reasons: Array.from(reasonMap.entries())
+      .map(([note, count]) => ({ note, count }))
+      .sort((a, b) => b.count - a.count),
+    llmConfigured: cfg.enabled,
+    model: cfg.model,
+    blueprint: {
+      aiMode: row.aiMode,
+      degraded: row.degraded,
+      note: row.aiNote,
+    },
+  };
+
   return {
     merchant: decodeMerchant(row.merchant),
     campaign: decodeCampaign(row),
@@ -376,6 +441,7 @@ export async function getWorkspace(campaignId: string): Promise<Workspace | null
     rewards,
     leaderboard,
     metrics,
+    aiQuality,
   };
 }
 
@@ -426,14 +492,23 @@ export async function getOrCreateContributor(token: string) {
 
   const suffix = Math.floor(1000 + Math.random() * 9000);
   const emojis = ["🙂", "😋", "🌶️", "🍲", "✨", "🐱", "🍜", "🥢"];
-  return prisma.contributor.create({
-    data: {
-      viewerToken: token || newViewerToken(),
-      nickname: `老客${suffix}`,
-      avatarEmoji: emojis[Math.floor(Math.random() * emojis.length)],
-      sourceChannel: "link",
-    },
-  });
+
+  try {
+    return await prisma.contributor.create({
+      data: {
+        viewerToken: token || newViewerToken(),
+        nickname: `老客${suffix}`,
+        avatarEmoji: emojis[Math.floor(Math.random() * emojis.length)],
+        sourceChannel: "link",
+      },
+    });
+  } catch {
+    // 并发场景：老客双击提交、或同时开了两个标签页，两个请求都可能走到这里，
+    // 后一个会撞上 viewerToken 的唯一约束。此时重读一次即可，不该把 500 甩给用户。
+    const again = await prisma.contributor.findUnique({ where: { viewerToken: token } });
+    if (again) return again;
+    throw new Error("无法建立老客身份，请刷新页面重试");
+  }
 }
 
 /** H5 底部「还差多少分解锁福利」只需要一个数，别把整个 dashboard 拉出来 */

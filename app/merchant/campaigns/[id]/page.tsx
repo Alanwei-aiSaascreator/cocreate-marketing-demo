@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { AiModeTag, Badge, Card, EmptyState, PlatformBadge, ProgressBar, Stat } from "@/components/ui";
+import { AiQualityCard } from "@/components/AiQualityCard";
 import { ContentLibrary } from "@/components/ContentLibrary";
 import { QrCard } from "@/components/QrCard";
 import { RedeemButton } from "@/components/actions";
@@ -45,7 +46,7 @@ export default async function WorkspacePage({
   const ws = await getWorkspace(id);
   if (!ws) notFound();
 
-  const { merchant, campaign, metrics, leaderboard, submissions, contents, rewards, contributions } = ws;
+  const { merchant, campaign, metrics, leaderboard, submissions, contents, rewards, contributions, aiQuality } = ws;
 
   return (
     <div>
@@ -69,6 +70,12 @@ export default async function WorkspacePage({
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* 有降级就在头部直接报出来，不让商家必须翻到概览才发现 */}
+            {aiQuality.degraded > 0 && (
+              <Badge tone="red">
+                AI 降级 {aiQuality.degraded} 条
+              </Badge>
+            )}
             <AiModeTag mode={campaign.aiMode} note={campaign.aiNote} />
             <RerunButton campaignId={campaign.id} />
           </div>
@@ -107,6 +114,9 @@ export default async function WorkspacePage({
               hint={`已核销 ${metrics.rewardsRedeemed} 张`}
             />
           </div>
+
+          {/* AI 生成质量：放在最显眼处，这是运维要盯的第一个数字 */}
+          <AiQualityCard quality={aiQuality} />
 
           {/* 闭环漏斗 */}
           <Card>

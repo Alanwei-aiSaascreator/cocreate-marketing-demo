@@ -47,6 +47,7 @@ export async function POST(
       rewardTiers: JSON.stringify(blueprint.rewardTiers),
       aiMode: blueprint.aiMode,
       aiNote: blueprint.note,
+      degraded: blueprint.degraded,
     },
   });
 
@@ -54,6 +55,7 @@ export async function POST(
     ok: true,
     aiMode: blueprint.aiMode,
     aiNote: blueprint.note,
+    degraded: blueprint.degraded,
     elapsedMs: Date.now() - startedAt,
   });
 }

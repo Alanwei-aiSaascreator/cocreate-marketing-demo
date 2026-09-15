@@ -217,6 +217,72 @@
 
 ---
 
+## ADR-10 · 降级要可见，但「可见」分两层，比例才是要盯的那个数
+
+**背景**：做完 ADR-9 后，单条内容都标了 `aiMode`，界面上也显示「大模型 / 规则引擎」。
+但被追问了一句关键的话：*"所以我们现在还是在使用静默降级吗？"*
+
+**第一层反思 —— 单条标注 ≠ 可观测**：
+单条标注只能**事后追查**（"这条为什么是模板？"）。
+运维真正要盯的是**聚合比例**：模型现在健不健康、失败率是多少、失败原因集中在哪。
+没有这一层，模型在生产上静默退化成模板，你依然不会知道。
+
+**第二层反思（更关键）—— 只统计 llm/rule 比例会骗人**：
+`aiMode = "rule"` 有**三种完全不同的来源**：
+
+| 来源 | 是不是故障 |
+| --- | --- |
+| 未配置 key，按设计走规则引擎 | ❌ 不是 |
+| 种子数据刻意用规则引擎（离线可复现） | ❌ 不是 |
+| **已配置 key，但模型调用失败 / 返回不合法** | ✅ **是** |
+
+如果只统计 llm : rule 比例，演示数据会显示「规则引擎 100%」——
+看着像全线故障，实际一切正常。**这样一个会骗人的指标，比没有指标更糟。**
+
+**决策**：给 `Campaign` 和 `GeneratedContent` 增加 `degraded` 布尔字段，
+**只有第三种情况才为 true**。于是面板能给出三个独立数字：
+
+```
+大模型          32 条  67%
+降级             0 条   0%    ← 真正要盯的
+规则引擎（按设计） 16 条  33%
+```
+
+外加：降级原因分布（按 `aiNote` 聚合）、健康判定文案、活动框架的生成方式。
+
+**健康判定也必须诚实**：种子数据下会出现「大模型 0 条」却「无降级」的组合，
+这时候说"模型调用全部正常"是误导 —— 应该说明白：
+*"模型已配置且未发生降级；本次活动内容均按设计用规则引擎产出（种子数据预生成），
+等有新素材提交就会走模型。"*
+
+另外，一旦有降级，工作台**头部就直接报红**（`AI 降级 N 条`），
+不让商家必须翻到概览页才发现。
+
+**配套回归断言**：冒烟测试第 9 节拉取工作台页面，
+断言「AI 生成质量」面板存在、区分了「按设计」与「降级」两个概念、
+且配了 key 且无故障时显示「零降级」。
+
+---
+
+## ADR-11 · 认人要防并发，别把 500 甩给老客
+
+**背景**：`getOrCreateContributor()` 原本是「查不到就建」。
+但老客双击提交、或同时开了两个标签页时，两个请求都会查不到、都去建，
+后一个会撞上 `viewerToken` 的唯一约束 —— 用户看到的是一个 500。
+
+**决策**：create 失败后重读一次。因为此时几乎可以确定是并发同伴刚建好的，
+重读就能拿到同一个身份，而不是把错误抛给老客。
+
+```ts
+try { return await prisma.contributor.create({ ... }); }
+catch { const again = await prisma.contributor.findUnique({ ... }); if (again) return again; throw ...; }
+```
+
+免登录 token 认人天然会遇到这个竞态（没有账号体系做前置去重），
+所以这条不是"防御性编程"，是这套机制必须付的成本。
+
+---
+
 ## 一个环境层面的踩坑（与产品无关，但卡了很久）
 
 `pnpm install` 的 postinstall 步骤 `prisma generate` 报 `ENOSPC: no space left on device`。
@@ -232,3 +298,18 @@ $env:TEMP = "D:\tmp"; $env:TMP = "D:\tmp"
 - `CI=true` 会连带启用 `--frozen-lockfile`，加依赖时必须 `pnpm install --no-frozen-lockfile`
 - pnpm 10+ 默认拦截依赖构建脚本，`pnpm-workspace.yaml` 里必须放行
   `prisma` / `@prisma/client` / `@prisma/engines` / `esbuild`，否则别人装不出可用的 Prisma Client
+
+### 一个反复出现的模式：dev server 占着构建产物
+
+这个项目里踩到了**三次同类问题**，值得单独记一笔 —— 都是「dev server 正在运行，
+而另一个命令要替换它正在使用的文件」：
+
+| # | 现象 | 原因 | 处理 |
+| --- | --- | --- | --- |
+| 1 | dev server 全线 500，`Cannot find module './787.js'` | `pnpm build` 清空了 dev 正在用的 `.next` | 已从结构上修掉：build 与 dev 用不同目录（ADR 见 `next.config.ts`） |
+| 2 | `prisma generate` 报 `EPERM: rename ...query_engine-windows.dll.node` | dev server 加载了 Prisma 的 native engine DLL，文件被锁 | 停 dev 再 generate。**注意类型定义会更新成功而运行时不会**，所以必须重启 dev，否则旧 client 不认识新字段 |
+| 3 | 页面间歇性 500，`SyntaxError: Unexpected end of JSON input` | 强杀 dev server 时 `.next` 里的 JSON 被写到一半 | 停干净后删掉整个 `.next` 重启 |
+
+第 3 条的隐蔽之处在于**间歇性**：同一路径可能这次 200、下次 500。
+排查时看到同一 URL 一次成功一次失败，就要立刻想到"构建产物坏了"，
+而不是去翻业务代码。**判断依据：`JSON.parse("")` 抛 `Unexpected end of JSON input`。**

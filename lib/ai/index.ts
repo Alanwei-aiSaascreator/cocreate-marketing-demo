@@ -58,6 +58,15 @@ export interface BlueprintResult {
   taskCard: TaskField[];
   rewardTiers: RewardTier[];
   aiMode: AiMode;
+  /**
+   * 是否真的发生了「降级」。
+   *
+   * 只有一种情况是 true：**本该走模型（已配置 key）却因为失败退回规则引擎**。
+   * 「没配 key」和「种子数据刻意用规则引擎」都**不算降级** ——
+   * 不区分这两者，后台的 llm/rule 比例就会骗人：演示数据会显示 100% 规则引擎，
+   * 看着像全线故障，其实一切正常。
+   */
+  degraded: boolean;
   note: string;
 }
 
@@ -66,12 +75,19 @@ export async function generateBlueprint(
   campaign: CampaignLike,
 ): Promise<BlueprintResult> {
   const cfg = llmConfig();
-  const fallback = () => {
+  const fallback = (degraded: boolean, note?: string): BlueprintResult => {
     const r = ruleBlueprint(merchant, campaign);
-    return { frames: r.frames, taskCard: r.taskCard, rewardTiers: r.rewardTiers, aiMode: "rule" as AiMode, note: r.note };
+    return {
+      frames: r.frames,
+      taskCard: r.taskCard,
+      rewardTiers: r.rewardTiers,
+      aiMode: "rule",
+      degraded,
+      note: note ?? r.note,
+    };
   };
 
-  if (!cfg.enabled) return fallback();
+  if (!cfg.enabled) return fallback(false);
 
   const res = await llmJson<BlueprintPayload>({
     system: BLUEPRINT_SYSTEM,
@@ -83,8 +99,7 @@ export async function generateBlueprint(
   });
 
   if (!res.ok) {
-    const r = fallback();
-    return { ...r, note: `模型调用失败，已自动降级到规则引擎。原因：${res.error}` };
+    return fallback(true, `模型调用失败，已自动降级到规则引擎。原因：${res.error}`);
   }
 
   // 逐条校验：坏一条丢一条，再由 ensure* 用规则引擎补齐，而不是整批判失败
@@ -94,10 +109,9 @@ export async function generateBlueprint(
 
   const dropped = rawFrames.dropped + rawTaskCard.dropped + rawTiers.dropped;
 
-  // 模型一条都没给出可用的，就如实标成规则引擎，不假装是 AI 产出的
+  // 模型一条都没给出可用的，就如实标成规则引擎 + 降级，不假装是 AI 产出的
   if (rawFrames.kept.length === 0 && rawTaskCard.kept.length === 0 && rawTiers.kept.length === 0) {
-    const r = fallback();
-    return { ...r, note: `模型产出全部不合法（丢弃 ${dropped} 项），已改用规则引擎。` };
+    return fallback(true, `模型产出全部不合法（丢弃 ${dropped} 项），已降级到规则引擎。`);
   }
 
   const frames = ensureFrames(rawFrames.kept, merchant, campaign);
@@ -116,6 +130,7 @@ export async function generateBlueprint(
     taskCard,
     rewardTiers,
     aiMode: "llm",
+    degraded: false,
     note: notes.join("；"),
   };
 }
@@ -213,6 +228,8 @@ function ensureRewardTiers(tiers: RawRewardTier[], merchant: MerchantLike): Rewa
 export interface ComposeResult {
   contents: ComposedContent[];
   aiMode: AiMode;
+  /** 同 BlueprintResult.degraded：只有「本该走模型却失败」才为 true */
+  degraded: boolean;
   note: string;
 }
 
@@ -227,14 +244,17 @@ export async function composeContents(
     ? campaign.platforms
     : frames.map((f) => f.platform);
 
-  const byRule = (): ComposeResult => ({
+  const byRule = (degraded: boolean, note?: string): ComposeResult => ({
     contents: targets.map((p) => ruleCompose(merchant, campaign, submission, p)),
     aiMode: "rule",
-    note: "未配置模型或调用失败，已用规则引擎基于老客素材拼装。",
+    degraded,
+    note:
+      note ??
+      "未配置模型 key，按设计使用规则引擎基于老客素材拼装（非降级）。",
   });
 
   const cfg = llmConfig();
-  if (!cfg.enabled) return byRule();
+  if (!cfg.enabled) return byRule(false);
 
   const res = await llmJson<ComposeBundlePayload>({
     system: COMPOSE_SYSTEM,
@@ -260,7 +280,7 @@ export async function composeContents(
   });
 
   if (!res.ok) {
-    return { ...byRule(), note: `模型调用失败，已自动降级到规则引擎。原因：${res.error}` };
+    return byRule(true, `模型调用失败，已自动降级到规则引擎。原因：${res.error}`);
   }
 
   // 逐条校验：某一条内容的字段有问题，只放弃那一个平台并由规则引擎补齐，
@@ -284,12 +304,9 @@ export async function composeContents(
     });
   }
 
-  // 模型一条可用的都没给出，就如实标成规则引擎
+  // 模型一条可用的都没给出，就如实标成规则引擎 + 降级
   if (modelContents.size === 0) {
-    return {
-      ...byRule(),
-      note: `模型产出全部不合法（丢弃 ${raw.dropped} 条），已改用规则引擎。`,
-    };
+    return byRule(true, `模型产出全部不合法（丢弃 ${raw.dropped} 条），已降级到规则引擎。`);
   }
 
   const contents = targets.map((p) => modelContents.get(p) ?? ruleCompose(merchant, campaign, submission, p));
@@ -299,7 +316,7 @@ export async function composeContents(
   if (filled > 0) notes.push(`${filled} 个平台由规则引擎补齐`);
   if (raw.dropped > 0) notes.push(`丢弃 ${raw.dropped} 条不合法产出`);
 
-  return { contents, aiMode: "llm", note: notes.join("；") };
+  return { contents, aiMode: "llm", degraded: false, note: notes.join("；") };
 }
 
 /** 服务端合规自检：不信任模型的自我声明 */

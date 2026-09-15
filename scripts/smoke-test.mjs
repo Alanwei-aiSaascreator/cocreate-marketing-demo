@@ -15,6 +15,7 @@ const BASE = (process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, "
 
 // 读 .env 判断是否配置了模型 key —— 决定「必须走大模型」这条断言是否适用
 const envText = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+const hasKey = /LLM_API_KEY\s*=\s*["']?[^"'\s]+/.test(envText);
 
 let passed = 0;
 let failed = 0;
@@ -188,7 +189,6 @@ async function main() {
     // 关键回归断言：「配置了模型却静默降级」是最危险的失败模式 ——
     // 界面上一切正常，但内容其实是模板拼的，产品主张直接落空。
     // 实测踩过：模型有一条内容的 title 为空，导致 4 个平台全部退回模板。
-    const hasKey = /LLM_API_KEY\s*=\s*["']?[^"'\s]+/.test(envText);
     if (hasKey) {
       check(
         submission.aiMode === "llm",
@@ -312,6 +312,32 @@ async function main() {
     );
   } catch (err) {
     fail("演示固定入口", err.message);
+  }
+
+  // ── 9. AI 质量可观测性 ─────────────────────────────────
+  // 光有降级机制不够：必须能从后台看到「大模型 / 按设计的规则引擎 / 真实降级」三者的比例，
+  // 否则线上模型静默退化成模板，没人会知道。
+  section("9. AI 质量可观测性");
+  try {
+    const res = await fetch(`${BASE}/merchant/campaigns/${campaign.campaignId}`);
+    const html = await res.text();
+    check(res.ok, "工作台可访问", `HTTP ${res.status}`);
+    check(html.includes("AI 生成质量"), "概览页展示 AI 生成质量面板");
+    check(
+      html.includes("规则引擎（按设计）"),
+      "面板区分「按设计」与「降级」两个概念",
+    );
+
+    if (hasKey) {
+      check(
+        html.includes("零降级"),
+        "配了 key 且无故障时，面板显示零降级",
+      );
+    } else {
+      ok("未配置 key，跳过零降级断言");
+    }
+  } catch (err) {
+    fail("AI 质量面板", err.message);
   }
 
   // ── 汇总 ───────────────────────────────────────────────

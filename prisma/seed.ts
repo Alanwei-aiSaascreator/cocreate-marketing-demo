@@ -126,7 +126,10 @@ async function main() {
       taskCard: JSON.stringify(blueprint.taskCard),
       rewardTiers: JSON.stringify(blueprint.rewardTiers),
       aiMode: "rule",
-      aiNote: blueprint.note,
+      // 明确写成「按设计如此」，而不是含糊的兜底说明 ——
+      // 否则后台 AI 质量面板会把这批种子数据误判成故障降级。
+      aiNote: "种子数据刻意用规则引擎生成（保证离线可复现），非降级。",
+      degraded: false,
       // 固定 token，不用随机短码。
       // 原因：随机 token 意味着每次重跑种子都会让已发出去的演示链接失效，
       // 而"重置演示数据"是演示前的高频动作。固定下来，链接永远可用。
@@ -389,6 +392,8 @@ async function main() {
             coverHint: composed.coverHint,
             complianceNote: composed.complianceNote,
             aiMode: "rule",
+            degraded: false,
+            aiNote: "种子数据用规则引擎生成（离线可复现），非降级。",
             adopted: seed.adopted,
             adoptedAt: seed.adopted ? new Date() : null,
             shareToken: shareToken(),
