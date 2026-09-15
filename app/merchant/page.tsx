@@ -39,8 +39,11 @@ export default async function MerchantPage() {
                     {c.merchant.avgPrice ? <span>人均 ¥{c.merchant.avgPrice}</span> : null}
                   </div>
                 </div>
+                {/* 别再直接渲染原始状态字符串 —— 那会在界面上显示英文 "closed"。
+                    这个分支以前从没被走到过（种子里所有活动都是 active），
+                    现在有了已结束的活动才暴露出来。 */}
                 <Badge tone={c.status === "active" ? "green" : "gray"}>
-                  {c.status === "active" ? "进行中" : c.status}
+                  {c.status === "active" ? "进行中" : "已结束"}
                 </Badge>
               </div>
 
